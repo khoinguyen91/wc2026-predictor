@@ -523,6 +523,9 @@ function matchCardHTML(m){
     resultBadge = `<span class="result-badge ${cls}" style="opacity:.55" title="Awaiting admin confirmation">${lbl}</span>`;
   }
 
+  // A match is effectively locked if: admin locked it, result set, or it has started/finished
+  const effectiveLocked = m.locked || isLive || isDone;
+
   // Prediction buttons
   let predHtml = '';
   if(hasResult && pred){
@@ -532,7 +535,7 @@ function matchCardHTML(m){
         Your pick: ${pred.prediction.toUpperCase()} ${isCorrect?'✓ +300':'✗ -200'}
       </button>
     </div>`;
-  } else if(!hasResult && !m.locked && token){
+  } else if(!hasResult && !effectiveLocked && token){
     const sel = pred ? pred.prediction : null;
     predHtml = `<div class="predict-btns">
       <button class="pred-btn${sel==='home'?' selected':''}" onclick="predict('${m.id}','home')">
@@ -543,12 +546,15 @@ function matchCardHTML(m){
         ${flagEmoji(m.away)} Away
       </button>
     </div>`;
-  } else if(m.locked && pred && !hasResult){
+  } else if(effectiveLocked && pred && !hasResult){
+    // Show their locked-in pick (no change allowed)
+    const liveTag = isLive ? '🔴' : isDone ? 'FT' : '🔒';
     predHtml = `<div class="predict-btns">
-      <button class="pred-btn selected" disabled>🔒 ${pred.prediction.toUpperCase()}</button>
+      <button class="pred-btn selected" disabled>${liveTag} ${pred.prediction.toUpperCase()}</button>
     </div>`;
-  } else if(m.locked && !hasResult){
-    predHtml = `<div class="predict-btns"><span class="locked-tag">🔒 Locked</span></div>`;
+  } else if(effectiveLocked && !hasResult){
+    const liveTag = isLive ? '🔴 Live — locked' : isDone ? 'FT — locked' : '🔒 Locked';
+    predHtml = `<div class="predict-btns"><span class="locked-tag">${liveTag}</span></div>`;
   } else if(!token){
     predHtml = `<div class="predict-btns"><span class="locked-tag">Login to predict</span></div>`;
   }
