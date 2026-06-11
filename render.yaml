@@ -4,11 +4,12 @@ services:
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: python server.py
+    healthCheckPath: /healthz
     envVars:
       - key: ADMIN_PASSWORD
         generateValue: false
         value: admin1234
       - key: MONGO_URI
-        sync: false          # you paste this from MongoDB Atlas
+        sync: false          # paste your MongoDB Atlas connection string here
       - key: PORT
         value: 10000

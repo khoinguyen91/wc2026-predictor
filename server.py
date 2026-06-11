@@ -7,6 +7,7 @@ World Cup 2026 Predictor
 - Pure stdlib HTTP server (no Flask needed)
 """
 import http.server
+import socketserver
 import urllib.parse
 import json
 import hashlib
@@ -61,22 +62,48 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 _db = None
+_db_lock = threading.Lock()
 
 def get_db():
     global _db
     if _db is not None:
         return _db
-    if _HAS_PYMONGO and MONGO_URI:
-        try:
-            client = _pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-            client.admin.command("ping")
-            _db = client["wc2026"]
-            print("[DB] Connected to MongoDB Atlas")
+    with _db_lock:
+        if _db is not None:
             return _db
-        except Exception as e:
-            print("[DB] MongoDB connection failed:", e)
-    print("[DB] Using local JSON files")
-    return None
+        if _HAS_PYMONGO and MONGO_URI:
+            try:
+                client = _pymongo.MongoClient(
+                    MONGO_URI,
+                    serverSelectionTimeoutMS=5000,
+                    connectTimeoutMS=5000,
+                    socketTimeoutMS=10000,
+                    maxPoolSize=10,
+                    retryWrites=True,
+                )
+                client.admin.command("ping")
+                _db = client["wc2026"]
+                print("[DB] Connected to MongoDB Atlas")
+                return _db
+            except Exception as e:
+                print("[DB] MongoDB connection failed:", e)
+        print("[DB] Using local JSON files")
+        return None
+
+def _safe_db(fn, fallback):
+    """Run a DB operation; on any error reconnect once and retry, else return fallback."""
+    global _db
+    try:
+        return fn()
+    except Exception as e:
+        print("[DB] error, reconnecting:", e)
+        _db = None          # force reconnect on next get_db()
+        get_db()
+        try:
+            return fn()
+        except Exception as e2:
+            print("[DB] retry failed:", e2)
+            return fallback
 
 # JSON file helpers (local fallback)
 def _jpath(name):
@@ -97,14 +124,14 @@ def _jsave(name, data):
 def db_get_user(username):
     db = get_db()
     if db is not None:
-        return db.users.find_one({"username": username}, {"_id": 0})
-    users = _jload("users", {})
-    return users.get(username)
+        return _safe_db(lambda: db.users.find_one({"username": username}, {"_id": 0}), None)
+    return _jload("users", {}).get(username)
 
 def db_set_user(username, data):
     db = get_db()
     if db is not None:
-        db.users.replace_one({"username": username}, {"username": username, **data}, upsert=True)
+        _safe_db(lambda: db.users.replace_one(
+            {"username": username}, {"username": username, **data}, upsert=True), None)
         return
     users = _jload("users", {})
     users[username] = data
@@ -113,14 +140,14 @@ def db_set_user(username, data):
 def db_all_users():
     db = get_db()
     if db is not None:
-        return list(db.users.find({}, {"_id": 0}))
+        return _safe_db(lambda: list(db.users.find({}, {"_id": 0})), [])
     users = _jload("users", {})
     return [{"username": u, **d} for u, d in users.items()]
 
 def db_get_session(token):
     db = get_db()
     if db is not None:
-        s = db.sessions.find_one({"token": token}, {"_id": 0})
+        s = _safe_db(lambda: db.sessions.find_one({"token": token}, {"_id": 0}), None)
         if s and s["expires"] > time.time():
             return s
         return None
@@ -134,8 +161,10 @@ def db_set_session(token, username):
     expires = time.time() + 86400 * 7
     db = get_db()
     if db is not None:
-        db.sessions.replace_one({"token": token},
-            {"token": token, "username": username, "expires": expires}, upsert=True)
+        _safe_db(lambda: db.sessions.replace_one(
+            {"token": token},
+            {"token": token, "username": username, "expires": expires},
+            upsert=True), None)
         return
     sessions = _jload("sessions", {})
     sessions[token] = {"username": username, "expires": expires}
@@ -144,19 +173,17 @@ def db_set_session(token, username):
 def db_get_predictions(username):
     db = get_db()
     if db is not None:
-        doc = db.predictions.find_one({"username": username}, {"_id": 0})
+        doc = _safe_db(lambda: db.predictions.find_one({"username": username}, {"_id": 0}), None)
         return doc.get("picks", {}) if doc else {}
-    preds = _jload("predictions", {})
-    return preds.get(username, {})
+    return _jload("predictions", {}).get(username, {})
 
 def db_set_prediction(username, match_id, prediction):
     db = get_db()
     if db is not None:
-        db.predictions.update_one(
+        _safe_db(lambda: db.predictions.update_one(
             {"username": username},
             {"$set": {"picks." + match_id: {"prediction": prediction, "ts": time.time()}}},
-            upsert=True
-        )
+            upsert=True), None)
         return
     preds = _jload("predictions", {})
     if username not in preds:
@@ -165,26 +192,25 @@ def db_set_prediction(username, match_id, prediction):
     _jsave("predictions", preds)
 
 def db_all_predictions():
-    """Returns {username: {match_id: {prediction, ts}}}"""
     db = get_db()
     if db is not None:
-        return {doc["username"]: doc.get("picks", {})
-                for doc in db.predictions.find({}, {"_id": 0})}
+        docs = _safe_db(lambda: list(db.predictions.find({}, {"_id": 0})), [])
+        return {doc["username"]: doc.get("picks", {}) for doc in docs}
     return _jload("predictions", {})
 
 def db_get_override(match_id):
     db = get_db()
     if db is not None:
-        doc = db.overrides.find_one({"match_id": match_id}, {"_id": 0})
+        doc = _safe_db(lambda: db.overrides.find_one({"match_id": match_id}, {"_id": 0}), None)
         return doc or {}
-    overrides = _jload("overrides", {})
-    return overrides.get(match_id, {})
+    return _jload("overrides", {}).get(match_id, {})
 
 def db_set_override(match_id, data):
     db = get_db()
     if db is not None:
-        db.overrides.replace_one({"match_id": match_id},
-            {"match_id": match_id, **data}, upsert=True)
+        _safe_db(lambda: db.overrides.replace_one(
+            {"match_id": match_id},
+            {"match_id": match_id, **data}, upsert=True), None)
         return
     overrides = _jload("overrides", {})
     overrides[match_id] = data
@@ -193,7 +219,8 @@ def db_set_override(match_id, data):
 def db_all_overrides():
     db = get_db()
     if db is not None:
-        return {doc["match_id"]: doc for doc in db.overrides.find({}, {"_id": 0})}
+        docs = _safe_db(lambda: list(db.overrides.find({}, {"_id": 0})), [])
+        return {doc["match_id"]: doc for doc in docs}
     return _jload("overrides", {})
 
 # ── ESPN fetch ────────────────────────────────────────────────────────────────
@@ -352,7 +379,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path.rstrip("/")
-        if path in ("", "/"):
+        if path == "/healthz":
+            # Lightweight health check for Render — never blocks
+            body = b"ok"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", len(body))
+            self.end_headers()
+            self.wfile.write(body)
+        elif path in ("", "/"):
             self._serve_file("index.html", "text/html; charset=utf-8")
         elif path == "/admin":
             self._serve_file("admin.html", "text/html; charset=utf-8")
@@ -539,12 +574,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
             json_resp(self, 404, {"error": "Not found"})
 
 
+class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    """Handle each request in its own thread — prevents ESPN fetch from blocking health checks."""
+    daemon_threads = True
+
+
 if __name__ == "__main__":
     # Warm-up DB connection and ESPN cache in background
     threading.Thread(target=get_db, daemon=True).start()
     threading.Thread(target=fetch_espn, daemon=True).start()
 
-    server = http.server.HTTPServer(("0.0.0.0", PORT), Handler)
+    server = ThreadedHTTPServer(("0.0.0.0", PORT), Handler)
     print("=" * 52)
     print("  World Cup 2026 Predictor")
     print("  http://localhost:{}".format(PORT))
