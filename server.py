@@ -467,14 +467,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not match_id:
                 json_resp(self, 400, {"error": "match_id required"}); return
 
+            # Always use fresh/cached ESPN data — fetch now if cache is empty
+            cached = _espn_cache.get("data") or fetch_espn() or []
+            m_espn = next((m for m in cached if m["id"] == match_id), None)
+
+            # Reject unknown match IDs first
+            if m_espn is None:
+                json_resp(self, 404, {"error": "Match not found"}); return
+
+            # Reject if match has started or finished
+            if m_espn["statusState"] in ("in", "post"):
+                json_resp(self, 400, {"error": "Match has already started"}); return
+
+            # Reject if admin-locked or result already set
             ov = db_get_override(match_id)
             if ov.get("locked") or ov.get("result"):
                 json_resp(self, 400, {"error": "Match is locked or result already set"}); return
-
-            cached = _espn_cache.get("data") or []
-            m_espn = next((m for m in cached if m["id"] == match_id), None)
-            if m_espn and m_espn["statusState"] in ("in", "post"):
-                json_resp(self, 400, {"error": "Match has already started"}); return
 
             existing = db_get_predictions(uname).get(match_id)
             if existing:
