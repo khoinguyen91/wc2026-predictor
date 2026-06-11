@@ -390,9 +390,10 @@ async function loadMatches({ predictionsOnly = false } = {}){
     return;
   }
 
-  const [mRes, pRes] = await Promise.all([
+  const [mRes, pRes, meRes] = await Promise.all([
     api('GET', '/api/espn/matches'),
-    token ? api('GET', '/api/predictions') : Promise.resolve({ok:false, data:{}})
+    token ? api('GET', '/api/predictions') : Promise.resolve({ok:false, data:{}}),
+    token ? api('GET', '/api/me')           : Promise.resolve({ok:false, data:{}})
   ]);
 
   if(gen !== _matchLoadGen) return;  // a newer load started, discard this stale result
@@ -405,6 +406,13 @@ async function loadMatches({ predictionsOnly = false } = {}){
 
   allMatches    = mRes.data || [];
   myPredictions = pRes.ok ? pRes.data : {};
+
+  // Sync token count from server — catches auto-awarded tokens
+  if(meRes.ok && meRes.data.tokens !== undefined){
+    myTokens = meRes.data.tokens;
+    localStorage.setItem('wc_tokens', myTokens);
+    updateNav();
+  }
 
   // Build stage pills
   const stages = ['all', ...new Set(allMatches.map(m=>m.stage).filter(Boolean))];
@@ -615,12 +623,27 @@ async function loadLeaderboard(){
 }
 
 // ── My Picks ───────────────────────────────────────────────────────────────
+async function syncTokens(){
+  if(!token) return;
+  const res = await api('GET', '/api/me');
+  if(res.ok && res.data.tokens !== myTokens){
+    myTokens = res.data.tokens;
+    localStorage.setItem('wc_tokens', myTokens);
+    updateNav();
+  }
+}
+
 async function loadMyPicks(){
   const [meRes, mRes] = await Promise.all([api('GET','/api/me'), api('GET','/api/espn/matches')]);
   if(!meRes.ok){ showPage('auth'); return; }
   const me = meRes.data;
   allMatches    = mRes.ok ? mRes.data : allMatches;
   myPredictions = me.predictions || {};
+
+  // Always sync token display from server
+  myTokens = me.tokens;
+  localStorage.setItem('wc_tokens', myTokens);
+  updateNav();
 
   const total    = Object.keys(myPredictions).length;
   const correct  = me.correct || 0;
