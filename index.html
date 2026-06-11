@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>World Cup 2026 Predictor</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0e1a;--surface:#131929;--card:#1a2238;--accent:#f4b942;
+  --green:#22c55e;--red:#ef4444;--blue:#3b82f6;--live:#f97316;
+  --text:#e2e8f0;--muted:#94a3b8;--border:#2d3a52;--radius:12px;
+}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh}
+
+/* NAV */
+nav{background:var(--surface);border-bottom:1px solid var(--border);padding:0 16px;
+  display:flex;align-items:center;gap:12px;height:58px;position:sticky;top:0;z-index:100}
+.nav-brand{font-size:1.1rem;font-weight:700;color:var(--accent);white-space:nowrap}
+.nav-links{display:flex;gap:2px}
+.nav-btn{background:none;border:none;color:var(--muted);padding:7px 13px;border-radius:8px;
+  cursor:pointer;font-size:.85rem;transition:.15s;white-space:nowrap}
+.nav-btn:hover,.nav-btn.active{background:var(--card);color:var(--text)}
+.nav-right{margin-left:auto;display:flex;align-items:center;gap:10px;flex-shrink:0}
+.token-badge{background:var(--card);border:1px solid var(--accent);color:var(--accent);
+  padding:4px 11px;border-radius:20px;font-size:.82rem;font-weight:600;white-space:nowrap}
+.btn{padding:7px 16px;border-radius:8px;border:none;cursor:pointer;font-size:.85rem;
+  font-weight:600;transition:.15s;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.btn-primary{background:var(--accent);color:#000}.btn-primary:hover{opacity:.88}
+.btn-ghost{background:transparent;border:1px solid var(--border);color:var(--text)}
+.btn-ghost:hover{border-color:var(--accent);color:var(--accent)}
+
+/* LAYOUT */
+main{max-width:1080px;margin:0 auto;padding:20px 14px}
+.page{display:none}.page.active{display:block}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
+  padding:22px;margin-bottom:14px}
+h2{font-size:1.3rem;margin-bottom:18px}
+
+/* AUTH */
+.auth-wrap{max-width:390px;margin:50px auto}
+.form-group{margin-bottom:14px}
+label{display:block;margin-bottom:5px;color:var(--muted);font-size:.82rem}
+input{width:100%;padding:9px 13px;background:var(--surface);border:1px solid var(--border);
+  border-radius:8px;color:var(--text);font-size:.9rem;outline:none;transition:.15s}
+input:focus{border-color:var(--accent)}
+.error-msg{color:var(--red);font-size:.82rem;margin-top:7px}
+.success-msg{color:var(--green);font-size:.82rem;margin-top:7px}
+.switch-link{text-align:center;margin-top:14px;color:var(--muted);font-size:.82rem}
+.switch-link a{color:var(--accent)}
+
+/* TABS */
+.tabs{display:flex;gap:3px;margin-bottom:18px;background:var(--surface);
+  padding:4px;border-radius:10px;border:1px solid var(--border)}
+.tab{flex:1;padding:7px;border:none;background:none;color:var(--muted);
+  border-radius:7px;cursor:pointer;font-size:.82rem;font-weight:600;transition:.15s}
+.tab.active{background:var(--card);color:var(--text)}
+
+/* STAGE FILTER */
+.stage-bar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:18px}
+.stage-pill{padding:5px 13px;border-radius:20px;border:1px solid var(--border);
+  background:var(--surface);color:var(--muted);font-size:.78rem;font-weight:600;
+  cursor:pointer;transition:.15s;white-space:nowrap}
+.stage-pill:hover{border-color:var(--accent);color:var(--accent)}
+.stage-pill.active{background:var(--accent);border-color:var(--accent);color:#000}
+
+/* MATCH CARDS */
+.match-grid{display:grid;gap:10px}
+.section-label{display:flex;align-items:center;gap:8px;margin:18px 0 8px;
+  color:var(--muted);font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em}
+.section-label::after{content:'';flex:1;height:1px;background:var(--border)}
+
+.match-card{background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--radius);padding:14px 16px;
+  display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px;
+  position:relative;overflow:hidden;transition:.15s}
+.match-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:var(--border)}
+.match-card.predicted::before{background:var(--blue)}
+.match-card.correct::before{background:var(--green)}
+.match-card.wrong::before{background:var(--red)}
+.match-card.live-match::before{background:var(--live);animation:pulse 1.5s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+/* TEAM SIDE */
+.team{display:flex;flex-direction:column;align-items:center;gap:5px;text-align:center}
+.team.left{align-items:flex-end;text-align:right}
+.team.right{align-items:flex-start;text-align:left}
+.team-logo{width:42px;height:42px;object-fit:contain;border-radius:4px}
+.team-logo-fallback{width:42px;height:42px;font-size:2rem;line-height:42px;text-align:center}
+.team-name{font-size:.88rem;font-weight:600;line-height:1.2}
+.team-abbr{font-size:.7rem;color:var(--muted);font-weight:500}
+
+/* MATCH CENTER */
+.match-center{display:flex;flex-direction:column;align-items:center;gap:5px;min-width:110px}
+.match-time{font-size:.72rem;color:var(--muted);text-align:center}
+.score-box{display:flex;align-items:center;gap:8px}
+.score-num{font-size:1.5rem;font-weight:800;line-height:1;min-width:24px;text-align:center}
+.score-sep{color:var(--muted);font-size:.9rem;font-weight:300}
+.match-vs{font-size:.78rem;font-weight:600;color:var(--muted)}
+.status-badge{font-size:.68rem;font-weight:700;padding:2px 9px;border-radius:20px;
+  border:1px solid var(--border);color:var(--muted);background:var(--card)}
+.status-live{color:var(--live);border-color:var(--live);animation:pulse 1.5s ease-in-out infinite}
+.status-ft{color:var(--green);border-color:var(--green)}
+.result-badge{font-size:.7rem;font-weight:700;padding:2px 9px;border-radius:20px;border:1px solid}
+.result-home{color:var(--green);border-color:var(--green)}
+.result-away{color:var(--red);border-color:var(--red)}
+.result-draw{color:var(--accent);border-color:var(--accent)}
+
+/* PREDICTION BUTTONS */
+.predict-btns{display:flex;gap:5px;margin-top:8px;justify-content:center;flex-wrap:wrap}
+.pred-btn{padding:4px 11px;border-radius:20px;border:1px solid var(--border);
+  background:var(--card);color:var(--muted);font-size:.74rem;cursor:pointer;
+  transition:.15s;font-weight:600;white-space:nowrap}
+.pred-btn:hover{border-color:var(--accent);color:var(--accent)}
+.pred-btn.selected{background:var(--blue);border-color:var(--blue);color:#fff}
+.pred-btn.selected.correct-pred{background:var(--green);border-color:var(--green)}
+.pred-btn.selected.wrong-pred{background:var(--red);border-color:var(--red)}
+.locked-tag{font-size:.7rem;color:var(--muted);padding:3px 9px;background:var(--card);
+  border:1px solid var(--border);border-radius:20px}
+
+/* LEADERBOARD */
+.lb-table{width:100%;border-collapse:collapse}
+.lb-table th{text-align:left;padding:9px 12px;color:var(--muted);font-size:.75rem;
+  font-weight:600;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border)}
+.lb-table td{padding:11px 12px;border-bottom:1px solid var(--border);font-size:.88rem}
+.lb-table tr:last-child td{border-bottom:none}
+.lb-table tbody tr:hover{background:rgba(255,255,255,.025)}
+.me-row{background:rgba(59,130,246,.08)!important}
+.me-row td{color:var(--blue)}
+
+/* STATS GRID */
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:18px}
+.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;
+  padding:14px;text-align:center}
+.stat-val{font-size:1.7rem;font-weight:700;color:var(--accent)}
+.stat-label{font-size:.72rem;color:var(--muted);margin-top:3px}
+
+/* HERO */
+.hero{text-align:center;padding:32px 16px 20px;margin-bottom:4px}
+.hero-title{font-size:2.2rem;font-weight:800;
+  background:linear-gradient(135deg,#f4b942,#f97316);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.hero-sub{color:var(--muted);margin-top:6px;font-size:.95rem}
+.hero-cta{display:flex;gap:10px;justify-content:center;margin-top:18px}
+
+/* TOAST */
+.toast-wrap{position:fixed;top:66px;right:16px;z-index:999;display:flex;flex-direction:column;gap:7px}
+.toast{background:var(--card);border:1px solid var(--border);border-radius:10px;
+  padding:11px 16px;font-size:.82rem;max-width:280px;animation:slideIn .25s ease}
+.toast.ok{border-color:var(--green);color:var(--green)}
+.toast.err{border-color:var(--red);color:var(--red)}
+@keyframes slideIn{from{transform:translateX(110%);opacity:0}to{transform:none;opacity:1}}
+
+/* MISC */
+.spinner{display:inline-block;width:18px;height:18px;border:2px solid var(--border);
+  border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-wrap{display:flex;justify-content:center;padding:36px}
+.empty{text-align:center;color:var(--muted);padding:36px;font-size:.88rem}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-brand">⚽ WC2026</div>
+  <div class="nav-links">
+    <button class="nav-btn active" id="nb-matches"    onclick="showPage('matches')">Matches</button>
+    <button class="nav-btn"        id="nb-leaderboard" onclick="showPage('leaderboard')">Leaderboard</button>
+    <button class="nav-btn"        id="nb-my-picks"    onclick="showPage('my-picks')" style="display:none">My Picks</button>
+  </div>
+  <div class="nav-right">
+    <span class="token-badge" id="token-display" style="display:none">🪙 --</span>
+    <button class="btn btn-primary" id="nav-login-btn"  onclick="showPage('auth')">Login</button>
+    <button class="btn btn-ghost"   id="nav-logout-btn" onclick="logout()" style="display:none">Logout</button>
+  </div>
+</nav>
+
+<div class="toast-wrap" id="toast-wrap"></div>
+
+<main>
+
+<!-- AUTH -->
+<div class="page" id="page-auth">
+  <div class="auth-wrap">
+    <div class="card">
+      <div class="tabs">
+        <button class="tab active" id="tab-login"    onclick="switchTab('login')">Login</button>
+        <button class="tab"        id="tab-register" onclick="switchTab('register')">Register</button>
+      </div>
+      <div id="form-login">
+        <div class="form-group"><label>Username</label><input id="l-user" placeholder="username" onkeydown="if(event.key==='Enter')doLogin()"/></div>
+        <div class="form-group"><label>Password</label><input id="l-pass" type="password" placeholder="••••••••" onkeydown="if(event.key==='Enter')doLogin()"/></div>
+        <div id="l-err" class="error-msg" style="display:none"></div>
+        <button class="btn btn-primary" style="width:100%;margin-top:4px" onclick="doLogin()">Login</button>
+        <div class="switch-link">No account? <a href="#" onclick="switchTab('register')">Register</a></div>
+      </div>
+      <div id="form-register" style="display:none">
+        <p style="color:var(--muted);font-size:.8rem;margin-bottom:14px">New accounts start with <strong style="color:var(--accent)">3,000 tokens 🪙</strong></p>
+        <div class="form-group"><label>Username</label><input id="r-user" placeholder="3-20 chars, letters/digits/_"/></div>
+        <div class="form-group"><label>Password</label><input id="r-pass" type="password" placeholder="••••••••"/></div>
+        <div id="r-err" class="error-msg" style="display:none"></div>
+        <div id="r-ok"  class="success-msg" style="display:none"></div>
+        <button class="btn btn-primary" style="width:100%;margin-top:4px" onclick="doRegister()">Create Account</button>
+        <div class="switch-link">Have an account? <a href="#" onclick="switchTab('login')">Login</a></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- MATCHES -->
+<div class="page active" id="page-matches">
+  <div class="hero">
+    <div class="hero-title">⚽ World Cup 2026</div>
+    <div class="hero-sub">Predict results · Earn tokens · Beat your colleagues</div>
+    <div class="hero-cta" id="hero-cta">
+      <button class="btn btn-primary" onclick="showPage('auth')">Join Now — Get 3,000 🪙</button>
+    </div>
+  </div>
+  <div class="stage-bar" id="stage-bar"></div>
+  <div id="matches-container"><div class="loading-wrap"><div class="spinner"></div></div></div>
+</div>
+
+<!-- LEADERBOARD -->
+<div class="page" id="page-leaderboard">
+  <div class="card">
+    <h2>🏆 Leaderboard</h2>
+    <div id="lb-container"><div class="loading-wrap"><div class="spinner"></div></div></div>
+  </div>
+</div>
+
+<!-- MY PICKS -->
+<div class="page" id="page-my-picks">
+  <div class="stats-grid" id="my-stats"></div>
+  <div class="card">
+    <h2>My Picks</h2>
+    <div id="my-picks-container"><div class="loading-wrap"><div class="spinner"></div></div></div>
+  </div>
+</div>
+
+</main>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let token    = localStorage.getItem('wc_token');
+let username = localStorage.getItem('wc_username');
+let myTokens = parseInt(localStorage.getItem('wc_tokens') || '0');
+let allMatches   = [];
+let myPredictions = {};
+let activeStage  = 'all';
+
+// ── Country flag emoji fallback ────────────────────────────────────────────
+const FLAGS = {
+  "Mexico":"🇲🇽","South Africa":"🇿🇦","Uruguay":"🇺🇾","Morocco":"🇲🇦",
+  "Argentina":"🇦🇷","Albania":"🇦🇱","Spain":"🇪🇸","Brazil":"🇧🇷",
+  "France":"🇫🇷","Saudi Arabia":"🇸🇦","Germany":"🇩🇪","Japan":"🇯🇵",
+  "England":"🏴󠁧󠁢󠁥󠁮󠁧󠁿","Nigeria":"🇳🇬","Netherlands":"🇳🇱","Senegal":"🇸🇳",
+  "Portugal":"🇵🇹","South Korea":"🇰🇷","United States":"🇺🇸","USA":"🇺🇸",
+  "Poland":"🇵🇱","Italy":"🇮🇹","Ecuador":"🇪🇨","Croatia":"🇭🇷","Australia":"🇦🇺",
+  "Belgium":"🇧🇪","Cameroon":"🇨🇲","Colombia":"🇨🇴","Iran":"🇮🇷",
+  "Switzerland":"🇨🇭","Ghana":"🇬🇭","Denmark":"🇩🇰","Serbia":"🇷🇸",
+  "Canada":"🇨🇦","Qatar":"🇶🇦","Haiti":"🇭🇹","Scotland":"🏴󠁧󠁢󠁳󠁣󠁴󠁿",
+  "Turkey":"🇹🇷","Czechia":"🇨🇿","Bosnia-Herzegovina":"🇧🇦","Paraguay":"🇵🇾",
+  "Cape Verde":"🇨🇻","Sweden":"🇸🇪","Tunisia":"🇹🇳","Egypt":"🇪🇬",
+  "New Zealand":"🇳🇿","Iraq":"🇮🇶","Norway":"🇳🇴","Algeria":"🇩🇿",
+  "Austria":"🇦🇹","Jordan":"🇯🇴","Ivory Coast":"🇨🇮","Curacao":"🇨🇼",
+  "TBD":"🏳️"
+};
+function flagEmoji(name){ return FLAGS[name] || '🏳️'; }
+
+// ── API helper ─────────────────────────────────────────────────────────────
+async function api(method, path, body){
+  const opts = { method, headers: {'Content-Type':'application/json'} };
+  if(token) opts.headers['Authorization'] = 'Bearer '+token;
+  if(body)  opts.body = JSON.stringify(body);
+  const r = await fetch(path, opts);
+  const d = await r.json();
+  return { ok: r.ok, status: r.status, data: d };
+}
+
+// ── Toast ──────────────────────────────────────────────────────────────────
+function toast(msg, type='ok'){
+  const el = document.createElement('div');
+  el.className = 'toast ' + (type==='error' ? 'err' : 'ok');
+  el.textContent = msg;
+  document.getElementById('toast-wrap').appendChild(el);
+  setTimeout(() => el.remove(), 3500);
+}
+
+// ── Time formatting ────────────────────────────────────────────────────────
+function fmtGMT7(isoUTC){
+  const d = new Date(isoUTC);
+  return d.toLocaleString('en-GB', {
+    timeZone:'Asia/Bangkok', weekday:'short', month:'short',
+    day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false
+  }) + ' (GMT+7)';
+}
+
+// ── Nav / page switching ───────────────────────────────────────────────────
+function updateNav(){
+  document.getElementById('nav-login-btn').style.display  = token ? 'none' : '';
+  document.getElementById('nav-logout-btn').style.display = token ? '' : 'none';
+  document.getElementById('nb-my-picks').style.display    = token ? '' : 'none';
+  document.getElementById('hero-cta').style.display       = token ? 'none' : '';
+  const td = document.getElementById('token-display');
+  if(token){ td.textContent='🪙 '+myTokens.toLocaleString(); td.style.display=''; }
+  else { td.style.display='none'; }
+}
+
+function showPage(name){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById('page-'+name).classList.add('active');
+  const nb = document.getElementById('nb-'+name);
+  if(nb) nb.classList.add('active');
+  if(name==='matches')     loadMatches();
+  if(name==='leaderboard') loadLeaderboard();
+  if(name==='my-picks')    loadMyPicks();
+}
+
+// ── Auth ───────────────────────────────────────────────────────────────────
+function switchTab(t){
+  document.getElementById('form-login').style.display    = t==='login'    ? '' : 'none';
+  document.getElementById('form-register').style.display = t==='register' ? '' : 'none';
+  document.getElementById('tab-login').classList.toggle('active',    t==='login');
+  document.getElementById('tab-register').classList.toggle('active', t==='register');
+}
+
+async function doLogin(){
+  const u=document.getElementById('l-user').value.trim();
+  const p=document.getElementById('l-pass').value;
+  const errEl=document.getElementById('l-err'); errEl.style.display='none';
+  const res = await api('POST','/api/login',{username:u,password:p});
+  if(res.ok){
+    token=res.data.token; username=res.data.username; myTokens=res.data.tokens;
+    localStorage.setItem('wc_token',token);
+    localStorage.setItem('wc_username',username);
+    localStorage.setItem('wc_tokens',myTokens);
+    updateNav(); showPage('matches'); toast('Welcome, '+username+'!');
+  } else { errEl.textContent=res.data.error||'Login failed'; errEl.style.display=''; }
+}
+
+async function doRegister(){
+  const u=document.getElementById('r-user').value.trim();
+  const p=document.getElementById('r-pass').value;
+  const errEl=document.getElementById('r-err'); const okEl=document.getElementById('r-ok');
+  errEl.style.display='none'; okEl.style.display='none';
+  const res = await api('POST','/api/register',{username:u,password:p});
+  if(res.ok){
+    okEl.textContent='Account created! Logging in…'; okEl.style.display='';
+    const lr = await api('POST','/api/login',{username:u,password:p});
+    if(lr.ok){
+      token=lr.data.token; username=lr.data.username; myTokens=lr.data.tokens;
+      localStorage.setItem('wc_token',token);
+      localStorage.setItem('wc_username',username);
+      localStorage.setItem('wc_tokens',myTokens);
+      updateNav(); showPage('matches'); toast('Welcome '+username+'! You have 3,000 tokens 🪙');
+    }
+  } else { errEl.textContent=res.data.error||'Failed'; errEl.style.display=''; }
+}
+
+function logout(){
+  token=null; username=null; myTokens=0;
+  ['wc_token','wc_username','wc_tokens'].forEach(k=>localStorage.removeItem(k));
+  updateNav(); showPage('matches');
+}
+
+// ── Matches ────────────────────────────────────────────────────────────────
+async function loadMatches(){
+  const [mRes, pRes] = await Promise.all([
+    api('GET', '/api/espn/matches'),
+    token ? api('GET', '/api/predictions') : Promise.resolve({ok:false, data:{}})
+  ]);
+
+  if(!mRes.ok){
+    document.getElementById('matches-container').innerHTML =
+      '<div class="empty">⚠️ Could not load matches. '+( mRes.data.error||'')+'</div>';
+    return;
+  }
+
+  allMatches    = mRes.data || [];
+  myPredictions = pRes.ok ? pRes.data : {};
+
+  // Build stage pills
+  const stages = ['all', ...new Set(allMatches.map(m=>m.stage).filter(Boolean))];
+  const stageOrder = ['all','group-stage','round-of-32','round-of-16','quarterfinals','semifinals','3rd-place-match','final'];
+  stages.sort((a,b) => stageOrder.indexOf(a) - stageOrder.indexOf(b));
+
+  const stageLabels = {
+    'all':'All Stages','group-stage':'Group Stage','round-of-32':'Round of 32',
+    'round-of-16':'Round of 16','quarterfinals':'Quarter-Finals',
+    'semifinals':'Semi-Finals','3rd-place-match':'3rd Place','final':'Final'
+  };
+
+  document.getElementById('stage-bar').innerHTML = stages.map(s=>
+    `<button class="stage-pill${s===activeStage?' active':''}" onclick="setStage('${s}')">${stageLabels[s]||s}</button>`
+  ).join('');
+
+  renderMatches();
+}
+
+function setStage(s){
+  activeStage = s;
+  document.querySelectorAll('.stage-pill').forEach(p=>{
+    p.classList.toggle('active', p.textContent.trim() === ({
+      'all':'All Stages','group-stage':'Group Stage','round-of-32':'Round of 32',
+      'round-of-16':'Round of 16','quarterfinals':'Quarter-Finals',
+      'semifinals':'Semi-Finals','3rd-place-match':'3rd Place','final':'Final'
+    }[s]||s));
+  });
+  renderMatches();
+}
+
+function renderMatches(){
+  const list = activeStage==='all' ? allMatches : allMatches.filter(m=>m.stage===activeStage);
+  const container = document.getElementById('matches-container');
+  if(!list.length){ container.innerHTML='<div class="empty">No matches.</div>'; return; }
+
+  // Group by stageLabel then by date
+  const sections = {};
+  list.forEach(m=>{
+    const day = new Date(m.time).toLocaleDateString('en-GB',{timeZone:'Asia/Bangkok',weekday:'long',month:'long',day:'numeric'});
+    const key = m.stageLabel + '||' + day;
+    if(!sections[key]) sections[key]=[];
+    sections[key].push(m);
+  });
+
+  let html = '';
+  for(const [key, matches] of Object.entries(sections)){
+    const [stage, day] = key.split('||');
+    html += `<div class="section-label">${stage} &nbsp;·&nbsp; ${day}</div>`;
+    html += '<div class="match-grid">';
+    matches.forEach(m => { html += matchCardHTML(m); });
+    html += '</div>';
+  }
+  container.innerHTML = html;
+}
+
+function teamHTML(m, side){
+  const name  = m[side];          // m.home or m.away
+  const logo  = m[side+'Logo'];   // m.homeLogo or m.awayLogo
+  const cls   = side==='home' ? 'left' : 'right';
+  const imgEl = logo
+    ? `<img class="team-logo" src="${logo}" alt="${name}" onerror="this.style.display='none';this.nextSibling.style.display=''">
+       <span class="team-logo-fallback" style="display:none">${flagEmoji(name)}</span>`
+    : `<span class="team-logo-fallback">${flagEmoji(name)}</span>`;
+  return `<div class="team ${cls}">${imgEl}<div class="team-name">${name}</div></div>`;
+}
+
+function matchCardHTML(m){
+  const pred      = myPredictions[m.id];
+  const adminRes  = m.adminResult;    // set by admin
+  const espnRes   = m.espnResult;     // derived from score for finished matches
+  const hasResult = !!adminRes;       // only admin result triggers correct/wrong styling
+  const isCorrect = pred && hasResult && pred.prediction === adminRes;
+  const isWrong   = pred && hasResult && pred.prediction !== adminRes;
+  const isLive    = m.statusState === 'in';
+  const isDone    = m.statusState === 'post';
+
+  let cardCls = 'match-card';
+  if(isLive)         cardCls += ' live-match';
+  if(pred)           cardCls += ' predicted';
+  if(isCorrect)      cardCls += ' correct';
+  else if(isWrong)   cardCls += ' wrong';
+
+  // Status badge
+  let statusHtml = '';
+  if(isLive){
+    statusHtml = `<span class="status-badge status-live">🔴 LIVE</span>`;
+  } else if(isDone){
+    statusHtml = `<span class="status-badge status-ft">FT</span>`;
+  } else {
+    statusHtml = `<span class="status-badge">${fmtGMT7(m.time)}</span>`;
+  }
+
+  // Score (shown when live or done)
+  let scoreHtml = '';
+  if(isLive || isDone){
+    scoreHtml = `<div class="score-box">
+      <span class="score-num" style="${isLive?'color:var(--live)':''}">${m.homeScore||0}</span>
+      <span class="score-sep">-</span>
+      <span class="score-num" style="${isLive?'color:var(--live)':''}">${m.awayScore||0}</span>
+    </div>`;
+  } else {
+    scoreHtml = `<div class="match-vs">VS</div>`;
+  }
+
+  // Admin result badge (for token rewards)
+  let resultBadge = '';
+  if(adminRes){
+    const cls = adminRes==='draw' ? 'result-draw' : adminRes==='home' ? 'result-home' : 'result-away';
+    const lbl = adminRes==='draw' ? 'DRAW' : adminRes==='home' ? m.home.toUpperCase()+' WIN' : m.away.toUpperCase()+' WIN';
+    resultBadge = `<span class="result-badge ${cls}">✓ ${lbl}</span>`;
+  } else if(isDone && espnRes && !adminRes){
+    // Show ESPN score result for display, grayed out (no tokens awarded yet)
+    const cls = espnRes==='draw'?'result-draw':espnRes==='home'?'result-home':'result-away';
+    const lbl = espnRes==='draw'?'DRAW':espnRes==='home'?'HOME WIN':'AWAY WIN';
+    resultBadge = `<span class="result-badge ${cls}" style="opacity:.55" title="Awaiting admin confirmation">${lbl}</span>`;
+  }
+
+  // Prediction buttons
+  let predHtml = '';
+  if(hasResult && pred){
+    const cl = isCorrect?' correct-pred':isWrong?' wrong-pred':'';
+    predHtml = `<div class="predict-btns">
+      <button class="pred-btn selected${cl}" disabled>
+        Your pick: ${pred.prediction.toUpperCase()} ${isCorrect?'✓ +300':'✗ -200'}
+      </button>
+    </div>`;
+  } else if(!hasResult && !m.locked && token){
+    const sel = pred ? pred.prediction : null;
+    predHtml = `<div class="predict-btns">
+      <button class="pred-btn${sel==='home'?' selected':''}" onclick="predict('${m.id}','home')">
+        ${flagEmoji(m.home)} Home
+      </button>
+      <button class="pred-btn${sel==='draw'?' selected':''}" onclick="predict('${m.id}','draw')">DRAW</button>
+      <button class="pred-btn${sel==='away'?' selected':''}" onclick="predict('${m.id}','away')">
+        ${flagEmoji(m.away)} Away
+      </button>
+    </div>`;
+  } else if(m.locked && pred && !hasResult){
+    predHtml = `<div class="predict-btns">
+      <button class="pred-btn selected" disabled>🔒 ${pred.prediction.toUpperCase()}</button>
+    </div>`;
+  } else if(m.locked && !hasResult){
+    predHtml = `<div class="predict-btns"><span class="locked-tag">🔒 Locked</span></div>`;
+  } else if(!token){
+    predHtml = `<div class="predict-btns"><span class="locked-tag">Login to predict</span></div>`;
+  }
+
+  return `<div class="${cardCls}" id="mc-${m.id}">
+    ${teamHTML(m,'home')}
+    <div class="match-center">
+      ${statusHtml}
+      ${scoreHtml}
+      ${resultBadge}
+      ${predHtml}
+    </div>
+    ${teamHTML(m,'away')}
+  </div>`;
+}
+
+async function predict(matchId, prediction){
+  if(!token){ showPage('auth'); return; }
+  const res = await api('POST', '/api/predict', {match_id: matchId, prediction});
+  if(res.ok){
+    myTokens = res.data.tokens;
+    localStorage.setItem('wc_tokens', myTokens);
+    updateNav();
+    const prev = myPredictions[matchId];
+    myPredictions[matchId] = { prediction };
+    const m = allMatches.find(x=>x.id===matchId);
+    const card = document.getElementById('mc-'+matchId);
+    if(card && m) card.outerHTML = matchCardHTML(m);
+    toast(prev ? 'Prediction updated!' : `Placed! -200🪙 · Balance: ${myTokens.toLocaleString()}`);
+  } else {
+    toast(res.data.error || 'Failed', 'error');
+  }
+}
+
+// ── Leaderboard ────────────────────────────────────────────────────────────
+async function loadLeaderboard(){
+  const res = await api('GET', '/api/leaderboard');
+  const data = res.data || [];
+  const el = document.getElementById('lb-container');
+  if(!data.length){ el.innerHTML='<div class="empty">No players yet.</div>'; return; }
+
+  const rankIcon = i => i===0?'🥇':i===1?'🥈':i===2?'🥉':`${i+1}`;
+  let rows = data.map((u,i)=>{
+    const acc = u.predictions>0 ? Math.round(u.correct/u.predictions*100)+'%':'-';
+    return `<tr class="${u.username===username?'me-row':''}">
+      <td style="font-weight:700">${rankIcon(i)}</td>
+      <td><strong>${u.username}</strong>${u.username===username?' 👈':''}</td>
+      <td style="color:var(--accent);font-weight:600">${u.tokens.toLocaleString()} 🪙</td>
+      <td>${u.correct} / ${u.predictions}</td>
+      <td>${acc}</td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `<table class="lb-table">
+    <thead><tr><th>#</th><th>Player</th><th>Tokens</th><th>Correct/Total</th><th>Accuracy</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+// ── My Picks ───────────────────────────────────────────────────────────────
+async function loadMyPicks(){
+  const [meRes, mRes] = await Promise.all([api('GET','/api/me'), api('GET','/api/espn/matches')]);
+  if(!meRes.ok){ showPage('auth'); return; }
+  const me = meRes.data;
+  allMatches    = mRes.ok ? mRes.data : allMatches;
+  myPredictions = me.predictions || {};
+
+  const total    = Object.keys(myPredictions).length;
+  const correct  = me.correct || 0;
+  const accuracy = total>0 ? Math.round(correct/total*100)+'%' : '-';
+
+  document.getElementById('my-stats').innerHTML = `
+    <div class="stat-card"><div class="stat-val">${me.tokens.toLocaleString()}</div><div class="stat-label">🪙 Tokens</div></div>
+    <div class="stat-card"><div class="stat-val">${total}</div><div class="stat-label">Predictions</div></div>
+    <div class="stat-card"><div class="stat-val">${correct}</div><div class="stat-label">Correct</div></div>
+    <div class="stat-card"><div class="stat-val">${accuracy}</div><div class="stat-label">Accuracy</div></div>
+  `;
+
+  const predicted = allMatches.filter(m => myPredictions[m.id]);
+  if(!predicted.length){
+    document.getElementById('my-picks-container').innerHTML =
+      '<div class="empty">No predictions yet — go to Matches to start!</div>'; return;
+  }
+  let html = '<div class="match-grid">';
+  predicted.forEach(m => { html += matchCardHTML(m); });
+  html += '</div>';
+  document.getElementById('my-picks-container').innerHTML = html;
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────
+updateNav();
+loadMatches();
+</script>
+</body>
+</html>

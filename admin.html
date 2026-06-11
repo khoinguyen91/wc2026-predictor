@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Admin – WC2026 Predictor</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#0a0e1a;--surface:#131929;--card:#1a2238;--accent:#f4b942;
+  --green:#22c55e;--red:#ef4444;--blue:#3b82f6;--live:#f97316;
+  --text:#e2e8f0;--muted:#94a3b8;--border:#2d3a52;--radius:12px}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh}
+nav{background:var(--surface);border-bottom:1px solid var(--border);padding:0 20px;
+  display:flex;align-items:center;gap:16px;height:58px}
+.nav-brand{font-size:1.1rem;font-weight:700;color:var(--red)}
+main{max-width:1000px;margin:0 auto;padding:22px 14px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:22px;margin-bottom:14px}
+h2{font-size:1.25rem;margin-bottom:14px}
+label{display:block;margin-bottom:5px;color:var(--muted);font-size:.8rem}
+input,select{width:100%;padding:8px 12px;background:var(--surface);border:1px solid var(--border);
+  border-radius:8px;color:var(--text);font-size:.88rem;outline:none}
+input:focus,select:focus{border-color:var(--accent)}
+.btn{padding:7px 16px;border-radius:8px;border:none;cursor:pointer;font-size:.85rem;font-weight:600;transition:.15s}
+.btn-primary{background:var(--accent);color:#000}.btn-primary:hover{opacity:.88}
+.btn-sm{padding:4px 11px;font-size:.76rem;border-radius:6px}
+.btn-green{background:var(--green);color:#fff}
+.btn-blue{background:var(--blue);color:#fff}
+.btn-danger{background:var(--red);color:#fff}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;padding:8px 11px;color:var(--muted);font-size:.74rem;font-weight:600;
+  text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border)}
+td{padding:9px 11px;border-bottom:1px solid var(--border);font-size:.83rem;vertical-align:middle}
+tr:last-child td{border-bottom:none}
+.badge{padding:2px 9px;border-radius:20px;font-size:.7rem;font-weight:700}
+.badge-green{background:rgba(34,197,94,.15);color:var(--green)}
+.badge-red{background:rgba(239,68,68,.15);color:var(--red)}
+.badge-live{background:rgba(249,115,22,.15);color:var(--live)}
+.badge-gray{background:rgba(148,163,184,.1);color:var(--muted)}
+.msg{padding:9px 13px;border-radius:8px;margin-top:9px;font-size:.83rem}
+.msg-ok{background:rgba(34,197,94,.1);color:var(--green);border:1px solid rgba(34,197,94,.3)}
+.msg-err{background:rgba(239,68,68,.1);color:var(--red);border:1px solid rgba(239,68,68,.3)}
+.pw-row{display:flex;gap:10px;align-items:flex-end;margin-bottom:18px}
+.pw-row input{flex:1}
+#admin-lock{opacity:.35;pointer-events:none;transition:.3s}
+#admin-lock.unlocked{opacity:1;pointer-events:all}
+.stats-row{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:18px}
+.stat{background:var(--surface);border:1px solid var(--border);border-radius:10px;
+  padding:11px 18px;text-align:center}
+.stat-val{font-size:1.4rem;font-weight:700;color:var(--accent)}
+.stat-lbl{font-size:.7rem;color:var(--muted)}
+.team-logo{width:22px;height:22px;object-fit:contain;vertical-align:middle;margin-right:4px;border-radius:2px}
+.filter-bar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+.filter-pill{padding:4px 12px;border-radius:20px;border:1px solid var(--border);
+  background:var(--surface);color:var(--muted);font-size:.76rem;font-weight:600;cursor:pointer;transition:.15s}
+.filter-pill:hover{border-color:var(--accent);color:var(--accent)}
+.filter-pill.active{background:var(--accent);border-color:var(--accent);color:#000}
+</style>
+</head>
+<body>
+<nav>
+  <div class="nav-brand">🔐 WC2026 Admin</div>
+  <a href="/" style="margin-left:auto;color:var(--muted);font-size:.83rem">← Back to app</a>
+</nav>
+<main>
+
+<div class="card">
+  <h2>Admin Access</h2>
+  <div class="pw-row">
+    <input type="password" id="admin-pw" placeholder="Admin password" onkeydown="if(event.key==='Enter')unlock()"/>
+    <button class="btn btn-primary" onclick="unlock()">Unlock</button>
+  </div>
+  <div id="unlock-msg"></div>
+</div>
+
+<div id="admin-lock">
+  <div class="stats-row" id="admin-stats"></div>
+
+  <div class="card">
+    <h2>📋 Matches &amp; Results</h2>
+    <p style="color:var(--muted);font-size:.8rem;margin-bottom:12px">
+      Data sourced live from ESPN. Set result to award tokens to correct predictors.
+      Lock/unlock controls whether new predictions are accepted.
+    </p>
+    <div class="filter-bar" id="stage-filter"></div>
+    <div id="matches-table-wrap"><em style="color:var(--muted)">Loading…</em></div>
+    <div id="result-msg"></div>
+  </div>
+
+  <div class="card">
+    <h2>👥 Players</h2>
+    <div id="users-table-wrap"><em style="color:var(--muted)">Loading…</em></div>
+  </div>
+</div>
+
+</main>
+
+<script>
+let adminPw = '';
+let matches = [];
+let overrides = {};
+let activeFilter = 'all';
+
+const STAGE_LABELS = {
+  'all':'All','group-stage':'Group Stage','round-of-32':'Round of 32',
+  'round-of-16':'Round of 16','quarterfinals':'Quarters','semifinals':'Semis',
+  '3rd-place-match':'3rd Place','final':'Final'
+};
+const STAGE_ORDER = ['all','group-stage','round-of-32','round-of-16','quarterfinals','semifinals','3rd-place-match','final'];
+
+async function api(method, path, body){
+  const opts = {method, headers:{'Content-Type':'application/json'}};
+  if(body) opts.body = JSON.stringify(body);
+  const r = await fetch(path, opts);
+  return {ok:r.ok, data:await r.json()};
+}
+
+function showMsg(id, msg, ok){
+  const el=document.getElementById(id);
+  el.className='msg '+(ok?'msg-ok':'msg-err');
+  el.textContent=msg;
+  setTimeout(()=>{el.textContent='';},5000);
+}
+
+async function unlock(){
+  adminPw = document.getElementById('admin-pw').value;
+  const res = await api('POST','/api/admin/lock',{admin_password:adminPw, match_id:'__probe__', locked:false});
+  if(res.data.error==='Forbidden'){
+    showMsg('unlock-msg','Wrong password',false); return;
+  }
+  const msgEl = document.getElementById('unlock-msg');
+  msgEl.className='msg msg-ok'; msgEl.textContent='✓ Unlocked';
+  document.getElementById('admin-lock').classList.add('unlocked');
+  loadAll();
+}
+
+async function loadAll(){
+  const [mRes, lRes] = await Promise.all([
+    api('GET','/api/espn/matches'),
+    api('GET','/api/leaderboard')
+  ]);
+  matches = mRes.ok ? mRes.data : [];
+  const lb = lRes.ok ? lRes.data : [];
+
+  const totalPreds  = lb.reduce((s,u)=>s+u.predictions,0);
+  const totalTokens = lb.reduce((s,u)=>s+u.tokens,0);
+  const liveCount   = matches.filter(m=>m.statusState==='in').length;
+  document.getElementById('admin-stats').innerHTML=`
+    <div class="stat"><div class="stat-val">${lb.length}</div><div class="stat-lbl">Players</div></div>
+    <div class="stat"><div class="stat-val">${matches.length}</div><div class="stat-lbl">ESPN Matches</div></div>
+    <div class="stat"><div class="stat-val">${liveCount}</div><div class="stat-lbl">Live Now</div></div>
+    <div class="stat"><div class="stat-val">${totalPreds}</div><div class="stat-lbl">Predictions</div></div>
+    <div class="stat"><div class="stat-val">${(totalTokens/1000).toFixed(0)}k</div><div class="stat-lbl">Tokens in Play</div></div>
+  `;
+
+  // Stage filter pills
+  const stages = ['all', ...new Set(matches.map(m=>m.stage).filter(Boolean))];
+  stages.sort((a,b)=>STAGE_ORDER.indexOf(a)-STAGE_ORDER.indexOf(b));
+  document.getElementById('stage-filter').innerHTML = stages.map(s=>
+    `<span class="filter-pill${s===activeFilter?' active':''}" onclick="setFilter('${s}')">${STAGE_LABELS[s]||s}</span>`
+  ).join('');
+
+  renderMatchTable();
+
+  // Players
+  let uHtml=`<table><thead><tr><th>#</th><th>Username</th><th>Tokens</th><th>Predictions</th><th>Correct</th><th>Accuracy</th></tr></thead><tbody>`;
+  lb.forEach((u,i)=>{
+    const acc=u.predictions>0?Math.round(u.correct/u.predictions*100)+'%':'-';
+    const rank=i===0?'🥇':i===1?'🥈':i===2?'🥉':(i+1)+'';
+    uHtml+=`<tr><td>${rank}</td><td><strong>${u.username}</strong></td>
+      <td style="color:var(--accent);font-weight:600">${u.tokens.toLocaleString()} 🪙</td>
+      <td>${u.predictions}</td><td>${u.correct}</td><td>${acc}</td></tr>`;
+  });
+  uHtml+='</tbody></table>';
+  document.getElementById('users-table-wrap').innerHTML=uHtml;
+}
+
+function setFilter(s){
+  activeFilter=s;
+  document.querySelectorAll('.filter-pill').forEach(p=>{
+    p.classList.toggle('active', p.textContent.trim()===(STAGE_LABELS[s]||s));
+  });
+  renderMatchTable();
+}
+
+function renderMatchTable(){
+  const list = activeFilter==='all' ? matches : matches.filter(m=>m.stage===activeFilter);
+
+  const fmtTime = iso => new Date(iso).toLocaleString('en-GB',{
+    timeZone:'Asia/Bangkok',weekday:'short',month:'short',day:'numeric',
+    hour:'2-digit',minute:'2-digit',hour12:false
+  });
+
+  let html=`<table><thead><tr>
+    <th>Match</th><th>Kick-off (GMT+7)</th><th>Status</th><th>Score</th><th>Set Result</th><th>Lock</th>
+  </tr></thead><tbody>`;
+
+  list.forEach(m=>{
+    const stateMap = {pre:'',in:'live',post:'ft'};
+    let statusBadge;
+    if(m.adminResult){
+      statusBadge=`<span class="badge badge-green">✓ ${m.adminResult.toUpperCase()}</span>`;
+    } else if(m.statusState==='in'){
+      statusBadge=`<span class="badge badge-live">🔴 LIVE</span>`;
+    } else if(m.statusState==='post'){
+      statusBadge=`<span class="badge badge-red">FT</span>`;
+    } else if(m.locked){
+      statusBadge=`<span class="badge badge-red">🔒 Locked</span>`;
+    } else {
+      statusBadge=`<span class="badge badge-gray">Open</span>`;
+    }
+
+    const scoreCell = (m.statusState==='in'||m.statusState==='post')
+      ? `<strong style="color:var(--live)">${m.homeScore} – ${m.awayScore}</strong>`
+      : `<span style="color:var(--muted)">–</span>`;
+
+    const resultCell = m.adminResult
+      ? `<span style="color:var(--muted);font-size:.76rem">Done ✓</span>`
+      : `<select id="res-${m.id}" style="width:auto;padding:3px 7px;font-size:.78rem">
+           <option value="">-- pick --</option>
+           <option value="home">🏠 ${m.home} Win</option>
+           <option value="draw">🤝 Draw</option>
+           <option value="away">✈️ ${m.away} Win</option>
+         </select>
+         <button class="btn btn-sm btn-green" style="margin-left:5px" onclick="setResult('${m.id}','${m.home}','${m.away}')">Set</button>`;
+
+    const lockCell = m.adminResult ? '' : m.locked
+      ? `<button class="btn btn-sm btn-blue" onclick="toggleLock('${m.id}',false)">Unlock</button>`
+      : `<button class="btn btn-sm btn-danger" onclick="toggleLock('${m.id}',true)">Lock</button>`;
+
+    const homeLogo = m.homeLogo ? `<img class="team-logo" src="${m.homeLogo}" alt="">` : '';
+    const awayLogo = m.awayLogo ? `<img class="team-logo" src="${m.awayLogo}" alt="">` : '';
+
+    html+=`<tr>
+      <td>${homeLogo}${m.home} <span style="color:var(--muted)">vs</span> ${m.away}${awayLogo}</td>
+      <td style="font-size:.76rem;color:var(--muted);white-space:nowrap">${fmtTime(m.time)}</td>
+      <td>${statusBadge}</td>
+      <td>${scoreCell}</td>
+      <td>${resultCell}</td>
+      <td>${lockCell}</td>
+    </tr>`;
+  });
+
+  html+='</tbody></table>';
+  document.getElementById('matches-table-wrap').innerHTML=html;
+}
+
+async function setResult(matchId, homeName, awayName){
+  const sel = document.getElementById('res-'+matchId);
+  if(!sel){ return; }
+  const result = sel.value;
+  if(!result){ alert('Pick a result first'); return; }
+  const res = await api('POST','/api/admin/result',{admin_password:adminPw, match_id:matchId, result});
+  if(res.ok){
+    showMsg('result-msg',`✓ Result set! ${res.data.winner_count} winner(s) awarded 500 tokens each.`,true);
+    loadAll();
+  } else {
+    showMsg('result-msg', res.data.error||'Error',false);
+  }
+}
+
+async function toggleLock(matchId, locked){
+  const res = await api('POST','/api/admin/lock',{admin_password:adminPw, match_id:matchId, locked});
+  if(res.ok) loadAll();
+  else alert(res.data.error||'Error');
+}
+</script>
+</body>
+</html>
