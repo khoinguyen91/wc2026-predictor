@@ -331,9 +331,42 @@ def fetch_espn():
                 "espnResult":  espn_result,
             })
 
+        # Auto-award tokens for finished matches not yet processed
+        _auto_award(matches)
+
         _espn_cache["data"] = matches
         _espn_cache["ts"]   = now
         return matches
+
+
+def _auto_award(matches):
+    """Automatically set result and award tokens for finished matches
+    where ESPN has a final score but no admin result is recorded yet."""
+    for m in matches:
+        if m["statusState"] != "post" or not m["espnResult"]:
+            continue
+        ov = db_get_override(m["id"])
+        if ov.get("result"):
+            continue  # already processed
+
+        result = m["espnResult"]
+        print("[AUTO] Awarding result {} for match {} ({} vs {})".format(
+            result, m["id"], m["home"], m["away"]))
+
+        db_set_override(m["id"], {"result": result, "locked": True, "auto": True})
+
+        all_preds = db_all_predictions()
+        winners = []
+        for uname, picks in all_preds.items():
+            p = picks.get(m["id"])
+            if p and p.get("prediction") == result:
+                u = db_get_user(uname)
+                if u:
+                    u["tokens"]  = u.get("tokens", 0) + WIN_REWARD
+                    u["correct"] = u.get("correct", 0) + 1
+                    db_set_user(uname, u)
+                    winners.append(uname)
+        print("[AUTO] Winners for {}: {}".format(m["id"], winners))
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def hash_pw(pw):
