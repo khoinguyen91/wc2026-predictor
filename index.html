@@ -244,9 +244,10 @@ input:focus{border-color:var(--accent)}
 let token    = localStorage.getItem('wc_token');
 let username = localStorage.getItem('wc_username');
 let myTokens = parseInt(localStorage.getItem('wc_tokens') || '0');
-let allMatches   = [];
+let allMatches    = [];
 let myPredictions = {};
-let activeStage  = 'all';
+let activeStage   = 'all';
+let _matchLoadGen = 0;  // generation counter — discard stale loads
 
 // ── Country flag emoji fallback ────────────────────────────────────────────
 const FLAGS = {
@@ -325,17 +326,29 @@ function switchTab(t){
   document.getElementById('tab-register').classList.toggle('active', t==='register');
 }
 
+async function _applyLogin(data){
+  token=data.token; username=data.username; myTokens=data.tokens;
+  localStorage.setItem('wc_token',token);
+  localStorage.setItem('wc_username',username);
+  localStorage.setItem('wc_tokens',myTokens);
+  updateNav();
+  // Switch to matches page without re-fetching ESPN — just refresh predictions
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById('page-matches').classList.add('active');
+  document.getElementById('nb-matches').classList.add('active');
+  // If matches already loaded, only refresh predictions (fast); else full load
+  await loadMatches({ predictionsOnly: allMatches.length > 0 });
+}
+
 async function doLogin(){
   const u=document.getElementById('l-user').value.trim();
   const p=document.getElementById('l-pass').value;
   const errEl=document.getElementById('l-err'); errEl.style.display='none';
   const res = await api('POST','/api/login',{username:u,password:p});
   if(res.ok){
-    token=res.data.token; username=res.data.username; myTokens=res.data.tokens;
-    localStorage.setItem('wc_token',token);
-    localStorage.setItem('wc_username',username);
-    localStorage.setItem('wc_tokens',myTokens);
-    updateNav(); showPage('matches'); toast('Welcome, '+username+'!');
+    await _applyLogin(res.data);
+    toast('Welcome, '+username+'!');
   } else { errEl.textContent=res.data.error||'Login failed'; errEl.style.display=''; }
 }
 
@@ -349,11 +362,8 @@ async function doRegister(){
     okEl.textContent='Account created! Logging in…'; okEl.style.display='';
     const lr = await api('POST','/api/login',{username:u,password:p});
     if(lr.ok){
-      token=lr.data.token; username=lr.data.username; myTokens=lr.data.tokens;
-      localStorage.setItem('wc_token',token);
-      localStorage.setItem('wc_username',username);
-      localStorage.setItem('wc_tokens',myTokens);
-      updateNav(); showPage('matches'); toast('Welcome '+username+'! You have 3,000 tokens 🪙');
+      await _applyLogin(lr.data);
+      toast('Welcome '+username+'! You have 3,000 tokens 🪙');
     }
   } else { errEl.textContent=res.data.error||'Failed'; errEl.style.display=''; }
 }
@@ -361,19 +371,35 @@ async function doRegister(){
 function logout(){
   token=null; username=null; myTokens=0;
   ['wc_token','wc_username','wc_tokens'].forEach(k=>localStorage.removeItem(k));
-  updateNav(); showPage('matches');
+  updateNav();
+  myPredictions = {};
+  renderMatches();  // re-render in-place without re-fetching ESPN
 }
 
 // ── Matches ────────────────────────────────────────────────────────────────
-async function loadMatches(){
+async function loadMatches({ predictionsOnly = false } = {}){
+  const gen = ++_matchLoadGen;  // stamp this load
+
+  // If we already have match data and just need to refresh predictions (post-login)
+  if(predictionsOnly && allMatches.length){
+    if(!token){ myPredictions = {}; renderMatches(); return; }
+    const pRes = await api('GET', '/api/predictions');
+    if(gen !== _matchLoadGen) return;  // a newer load started, discard
+    myPredictions = pRes.ok ? pRes.data : {};
+    renderMatches();
+    return;
+  }
+
   const [mRes, pRes] = await Promise.all([
     api('GET', '/api/espn/matches'),
     token ? api('GET', '/api/predictions') : Promise.resolve({ok:false, data:{}})
   ]);
 
+  if(gen !== _matchLoadGen) return;  // a newer load started, discard this stale result
+
   if(!mRes.ok){
     document.getElementById('matches-container').innerHTML =
-      '<div class="empty">⚠️ Could not load matches. '+( mRes.data.error||'')+'</div>';
+      '<div class="empty">⚠️ Could not load matches. '+(mRes.data.error||'')+'</div>';
     return;
   }
 
