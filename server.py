@@ -466,12 +466,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         elif path == "/api/leaderboard":
             users = db_all_users()
-            board = sorted(
-                [{"username": u["username"], "tokens": u.get("tokens", 0),
-                  "correct": u.get("correct", 0), "predictions": u.get("predictions", 0)}
-                 for u in users],
-                key=lambda x: (-x["tokens"], -x["correct"])
-            )
+            board = []
+            for u in users:
+                tokens      = u.get("tokens", 0)
+                predictions = u.get("predictions", 0)
+                correct     = u.get("correct", 0)
+                net_gain    = tokens - INITIAL_TOKENS   # positive = profit, negative = loss
+                board.append({
+                    "username":    u["username"],
+                    "tokens":      tokens,
+                    "netGain":     net_gain,
+                    "correct":     correct,
+                    "predictions": predictions,
+                })
+            # Sort by: net gain desc → correct desc → predictions desc
+            # Inactive accounts (0 predictions) all sit at net_gain=0 at the bottom
+            board.sort(key=lambda x: (-x["netGain"], -x["correct"], -x["predictions"]))
             json_resp(self, 200, board)
 
         elif path == "/api/me":

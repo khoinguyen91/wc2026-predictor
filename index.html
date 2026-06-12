@@ -604,20 +604,41 @@ async function loadLeaderboard(){
   const el = document.getElementById('lb-container');
   if(!data.length){ el.innerHTML='<div class="empty">No players yet.</div>'; return; }
 
+  // Only show players who have made at least 1 prediction
+  const active = data.filter(u => u.predictions > 0);
+  const inactive = data.filter(u => u.predictions === 0);
+
   const rankIcon = i => i===0?'🥇':i===1?'🥈':i===2?'🥉':`${i+1}`;
-  let rows = data.map((u,i)=>{
-    const acc = u.predictions>0 ? Math.round(u.correct/u.predictions*100)+'%':'-';
-    return `<tr class="${u.username===username?'me-row':''}">
-      <td style="font-weight:700">${rankIcon(i)}</td>
-      <td><strong>${u.username}</strong>${u.username===username?' 👈':''}</td>
-      <td style="color:var(--accent);font-weight:600">${u.tokens.toLocaleString()} 🪙</td>
+
+  const makeRow = (u, i, dimmed=false) => {
+    const acc     = u.predictions>0 ? Math.round(u.correct/u.predictions*100)+'%' : '-';
+    const gain    = u.netGain >= 0
+      ? `<span style="color:var(--green)">+${u.netGain.toLocaleString()}</span>`
+      : `<span style="color:var(--red)">${u.netGain.toLocaleString()}</span>`;
+    const isMe    = u.username === username;
+    return `<tr class="${isMe?'me-row':''}" style="${dimmed?'opacity:.4':''}">
+      <td style="font-weight:700">${dimmed ? '-' : rankIcon(i)}</td>
+      <td><strong>${u.username}</strong>${isMe?' 👈':''}</td>
+      <td>${gain} 🪙</td>
+      <td style="color:var(--muted);font-size:.8rem">${u.tokens.toLocaleString()} total</td>
       <td>${u.correct} / ${u.predictions}</td>
       <td>${acc}</td>
     </tr>`;
-  }).join('');
+  };
+
+  let rows = active.map((u,i) => makeRow(u, i, false)).join('');
+  if(inactive.length){
+    rows += `<tr><td colspan="6" style="padding:10px 12px;color:var(--muted);font-size:.75rem;
+      text-align:center;border-bottom:1px solid var(--border)">
+      — ${inactive.length} player${inactive.length>1?'s':''} with no predictions yet —
+    </td></tr>`;
+    rows += inactive.map(u => makeRow(u, 0, true)).join('');
+  }
 
   el.innerHTML = `<table class="lb-table">
-    <thead><tr><th>#</th><th>Player</th><th>Tokens</th><th>Correct/Total</th><th>Accuracy</th></tr></thead>
+    <thead><tr>
+      <th>#</th><th>Player</th><th>Net Gain</th><th>Balance</th><th>Correct/Total</th><th>Accuracy</th>
+    </tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
 }
