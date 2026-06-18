@@ -581,7 +581,7 @@ function matchCardHTML(m){
 
   // ── Over/Under section ──────────────────────────────────────────────────
   let ouHtml = '';
-  if(m.ouLine != null && m.overOdds != null && m.underOdds != null){
+  if(m.ouLine != null){
     const ouPred    = myOUPredictions[m.id];
     const ouAdminRes= m.ouResult;                  // auto-derived from score
     const ouCorrect = ouPred && ouAdminRes && ouPred.prediction === ouAdminRes;
@@ -623,13 +623,14 @@ function matchCardHTML(m){
       ouBtns = `<span class="locked-tag">Login for O/U</span>`;
     }
 
-    const fmtOdds = v => v == null ? '?' : (v > 0 ? '+'+v : ''+v);
+    const fmtOdds = v => v == null ? null : (v > 0 ? '+'+v : ''+v);
+    const oddsInfo = (fmtOdds(m.overOdds) && fmtOdds(m.underOdds))
+      ? `&nbsp;·&nbsp;<span style="color:var(--green)">Over ${fmtOdds(m.overOdds)}</span>&nbsp;/&nbsp;<span style="color:var(--red)">Under ${fmtOdds(m.underOdds)}</span>`
+      : '';
     ouHtml = `<div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px">
       <div style="font-size:.68rem;color:var(--muted);margin-bottom:5px;text-align:center">
-        O/U ${m.ouLine} &nbsp;·&nbsp;
-        <span style="color:var(--green)">Over ${fmtOdds(m.overOdds)}</span> &nbsp;/&nbsp;
-        <span style="color:var(--red)">Under ${fmtOdds(m.underOdds)}</span>
-        &nbsp;·&nbsp;<span style="color:var(--muted);font-size:.62rem">via DraftKings/ESPN</span>
+        O/U ${m.ouLine}${oddsInfo}
+        &nbsp;·&nbsp;<span style="color:var(--muted);font-size:.62rem">via ESPN</span>
       </div>
       ${ouResultBadge}
       <div class="predict-btns">${ouBtns}</div>
