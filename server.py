@@ -322,10 +322,10 @@ def _score_to_result(home_score, away_score):
         return None
 
 def fetch_espn():
-    """Return list of normalised match dicts (cached 60 s)."""
+    """Return list of normalised match dicts (cached 120 s)."""
     with _espn_lock:
         now = time.time()
-        if _espn_cache["data"] and now - _espn_cache["ts"] < 60:
+        if _espn_cache["data"] and now - _espn_cache["ts"] < 120:
             return _espn_cache["data"]
 
         raw = _fetch_espn_raw()
@@ -400,11 +400,12 @@ def fetch_espn():
                 "ouResult":    ou_result,
             })
 
-        # Auto-award tokens for finished matches not yet processed
-        _auto_award(matches)
-
         _espn_cache["data"] = matches
         _espn_cache["ts"]   = now
+
+        # Auto-award runs in background — never blocks the HTTP response
+        threading.Thread(target=_auto_award, args=(matches,), daemon=True).start()
+
         return matches
 
 

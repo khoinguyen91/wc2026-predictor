@@ -384,21 +384,24 @@ async function loadMatches({ predictionsOnly = false } = {}){
   // If we already have match data and just need to refresh predictions (post-login)
   if(predictionsOnly && allMatches.length){
     if(!token){ myPredictions = {}; myOUPredictions = {}; renderMatches(); return; }
-    const [pRes, ouRes] = await Promise.all([
-      api('GET', '/api/predictions'),
-      api('GET', '/api/ou_predictions')
-    ]);
+    // /api/me already includes predictions and ouPredictions — single call
+    const meRes = await api('GET', '/api/me');
     if(gen !== _matchLoadGen) return;
-    myPredictions   = pRes.ok  ? pRes.data  : {};
-    myOUPredictions = ouRes.ok ? ouRes.data : {};
+    if(meRes.ok){
+      myPredictions   = meRes.data.predictions   || {};
+      myOUPredictions = meRes.data.ouPredictions || {};
+      myTokens = meRes.data.tokens;
+      localStorage.setItem('wc_tokens', myTokens);
+      updateNav();
+    }
     renderMatches();
     return;
   }
 
-  const [mRes, pRes, meRes] = await Promise.all([
+  // Two parallel calls: ESPN matches + user data (not three)
+  const [mRes, meRes] = await Promise.all([
     api('GET', '/api/espn/matches'),
-    token ? api('GET', '/api/predictions')   : Promise.resolve({ok:false, data:{}}),
-    token ? api('GET', '/api/me')            : Promise.resolve({ok:false, data:{}})
+    token ? api('GET', '/api/me') : Promise.resolve({ok:false, data:{}})
   ]);
 
   if(gen !== _matchLoadGen) return;  // a newer load started, discard this stale result
@@ -410,7 +413,7 @@ async function loadMatches({ predictionsOnly = false } = {}){
   }
 
   allMatches      = mRes.data || [];
-  myPredictions   = pRes.ok ? pRes.data : {};
+  myPredictions   = meRes.ok ? (meRes.data.predictions   || {}) : {};
   myOUPredictions = meRes.ok ? (meRes.data.ouPredictions || {}) : {};
 
   // Sync token count from server — catches auto-awarded tokens
