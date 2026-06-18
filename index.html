@@ -488,13 +488,15 @@ function teamHTML(m, side){
 
 function matchCardHTML(m){
   const pred      = myPredictions[m.id];
-  const adminRes  = m.adminResult;    // set by admin
-  const espnRes   = m.espnResult;     // derived from score for finished matches
-  const hasResult = !!adminRes;       // only admin result triggers correct/wrong styling
-  const isCorrect = pred && hasResult && pred.prediction === adminRes;
-  const isWrong   = pred && hasResult && pred.prediction !== adminRes;
   const isLive    = m.statusState === 'in';
   const isDone    = m.statusState === 'post';
+
+  // Use espnResult (auto-derived) as the source of truth — it's set as soon as match finishes
+  const result    = m.espnResult || m.adminResult || null;
+  const hasResult = !!result;
+  const isCorrect = pred && hasResult && pred.prediction === result;
+  const isWrong   = pred && hasResult && pred.prediction !== result;
+  const isPending = pred && !hasResult && (isLive || isDone);  // match done but result not yet parsed
 
   let cardCls = 'match-card';
   if(isLive)         cardCls += ' live-match';
@@ -524,17 +526,12 @@ function matchCardHTML(m){
     scoreHtml = `<div class="match-vs">VS</div>`;
   }
 
-  // Admin result badge (for token rewards)
+  // Result badge
   let resultBadge = '';
-  if(adminRes){
-    const cls = adminRes==='draw' ? 'result-draw' : adminRes==='home' ? 'result-home' : 'result-away';
-    const lbl = adminRes==='draw' ? 'DRAW' : adminRes==='home' ? m.home.toUpperCase()+' WIN' : m.away.toUpperCase()+' WIN';
+  if(result){
+    const cls = result==='draw' ? 'result-draw' : result==='home' ? 'result-home' : 'result-away';
+    const lbl = result==='draw' ? 'DRAW' : result==='home' ? m.home.toUpperCase()+' WIN' : m.away.toUpperCase()+' WIN';
     resultBadge = `<span class="result-badge ${cls}">✓ ${lbl}</span>`;
-  } else if(isDone && espnRes && !adminRes){
-    // Show ESPN score result for display, grayed out (no tokens awarded yet)
-    const cls = espnRes==='draw'?'result-draw':espnRes==='home'?'result-home':'result-away';
-    const lbl = espnRes==='draw'?'DRAW':espnRes==='home'?'HOME WIN':'AWAY WIN';
-    resultBadge = `<span class="result-badge ${cls}" style="opacity:.55" title="Awaiting admin confirmation">${lbl}</span>`;
   }
 
   // A match is effectively locked if: admin locked it, result set, or it has started/finished
@@ -549,6 +546,13 @@ function matchCardHTML(m){
         Your pick: ${pred.prediction.toUpperCase()} ${isCorrect?'✓ +300':'✗ -200'}
       </button>
     </div>`;
+  } else if(isPending && pred){
+    // Match finished but result not yet parsed (rare edge case)
+    predHtml = `<div class="predict-btns">
+      <button class="pred-btn selected" style="opacity:.7" disabled>
+        ⏳ ${pred.prediction.toUpperCase()} — pending
+      </button>
+    </div>`;
   } else if(!hasResult && !effectiveLocked && token){
     const sel = pred ? pred.prediction : null;
     predHtml = `<div class="predict-btns">
@@ -561,8 +565,7 @@ function matchCardHTML(m){
       </button>
     </div>`;
   } else if(effectiveLocked && pred && !hasResult){
-    // Show their locked-in pick (no change allowed)
-    const liveTag = isLive ? '🔴' : isDone ? 'FT' : '🔒';
+    const liveTag = isLive ? '🔴' : '🔒';
     predHtml = `<div class="predict-btns">
       <button class="pred-btn selected" disabled>${liveTag} ${pred.prediction.toUpperCase()}</button>
     </div>`;
@@ -591,7 +594,16 @@ function matchCardHTML(m){
     if(ouAdminRes && ouPred){
       const cl = ouCorrect?' correct-pred':ouWrong?' wrong-pred':'';
       ouBtns = `<button class="pred-btn selected${cl}" disabled>
-        O/U ${ouPred.prediction.toUpperCase()} ${ouCorrect?'✓ +300':'✗ -200'}
+        O/U: ${ouPred.prediction.toUpperCase()} ${ouCorrect?'✓ +300':'✗ -200'}
+      </button>`;
+    } else if(ouAdminRes && !ouPred){
+      // match done, no O/U prediction placed
+      ouBtns = `<span class="locked-tag" style="color:var(--muted)">No pick</span>`;
+    } else if(ouPred && !ouAdminRes && (isLive || isDone)){
+      // match in progress or FT but O/U result not yet resolved
+      const icon = isLive ? '🔴' : '⏳';
+      ouBtns = `<button class="pred-btn selected" style="opacity:.7" disabled>
+        ${icon} O/U: ${ouPred.prediction.toUpperCase()} — ${isLive?'live':'pending'}
       </button>`;
     } else if(!effectiveLocked && token && !ouAdminRes){
       const sel = ouPred ? ouPred.prediction : null;
@@ -603,8 +615,7 @@ function matchCardHTML(m){
           UNDER ${m.ouLine}
         </button>`;
     } else if(ouPred && !ouAdminRes){
-      const liveTag = isLive ? '🔴' : isDone ? 'FT' : '🔒';
-      ouBtns = `<button class="pred-btn selected" disabled>${liveTag} O/U ${ouPred.prediction.toUpperCase()}</button>`;
+      ouBtns = `<button class="pred-btn selected" disabled>🔒 O/U: ${ouPred.prediction.toUpperCase()}</button>`;
     } else if(!token){
       ouBtns = `<span class="locked-tag">Login for O/U</span>`;
     }
