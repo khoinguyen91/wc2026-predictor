@@ -472,7 +472,7 @@ function renderMatches(){
     const [stage, day] = key.split('||');
     html += `<div class="section-label">${stage} &nbsp;·&nbsp; ${day}</div>`;
     html += '<div class="match-grid">';
-    matches.forEach(m => { html += matchCardHTML(m); });
+    matches.forEach(m => { try{ html += matchCardHTML(m); } catch(e){ console.error('Card error',m.id,e); } });
     html += '</div>';
   }
   container.innerHTML = html;
@@ -581,7 +581,7 @@ function matchCardHTML(m){
 
   // ── Over/Under section ──────────────────────────────────────────────────
   let ouHtml = '';
-  if(m.ouLine !== null && m.ouLine !== undefined){
+  if(m.ouLine != null && m.overOdds != null && m.underOdds != null){
     const ouPred    = myOUPredictions[m.id];
     const ouAdminRes= m.ouResult;                  // auto-derived from score
     const ouCorrect = ouPred && ouAdminRes && ouPred.prediction === ouAdminRes;
@@ -623,11 +623,12 @@ function matchCardHTML(m){
       ouBtns = `<span class="locked-tag">Login for O/U</span>`;
     }
 
+    const fmtOdds = v => v == null ? '?' : (v > 0 ? '+'+v : ''+v);
     ouHtml = `<div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px">
       <div style="font-size:.68rem;color:var(--muted);margin-bottom:5px;text-align:center">
         O/U ${m.ouLine} &nbsp;·&nbsp;
-        <span style="color:var(--green)">Over ${m.overOdds>0?'+':''}${m.overOdds}</span> &nbsp;/&nbsp;
-        <span style="color:var(--red)">Under ${m.underOdds>0?'+':''}${m.underOdds}</span>
+        <span style="color:var(--green)">Over ${fmtOdds(m.overOdds)}</span> &nbsp;/&nbsp;
+        <span style="color:var(--red)">Under ${fmtOdds(m.underOdds)}</span>
         &nbsp;·&nbsp;<span style="color:var(--muted);font-size:.62rem">via DraftKings/ESPN</span>
       </div>
       ${ouResultBadge}
@@ -772,7 +773,7 @@ async function loadMyPicks(){
       '<div class="empty">No predictions yet — go to Matches to start!</div>'; return;
   }
   let html = '<div class="match-grid">';
-  predicted.forEach(m => { html += matchCardHTML(m); });
+  predicted.forEach(m => { try{ html += matchCardHTML(m); } catch(e){ console.error('Card error',m.id,e); } });
   html += '</div>';
   document.getElementById('my-picks-container').innerHTML = html;
 }
