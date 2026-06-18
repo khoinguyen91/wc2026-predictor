@@ -244,10 +244,11 @@ input:focus{border-color:var(--accent)}
 let token    = localStorage.getItem('wc_token');
 let username = localStorage.getItem('wc_username');
 let myTokens = parseInt(localStorage.getItem('wc_tokens') || '0');
-let allMatches    = [];
-let myPredictions = {};
-let activeStage   = 'all';
-let _matchLoadGen = 0;  // generation counter — discard stale loads
+let allMatches      = [];
+let myPredictions   = {};
+let myOUPredictions = {};
+let activeStage     = 'all';
+let _matchLoadGen   = 0;  // generation counter — discard stale loads
 
 // ── Country flag emoji fallback ────────────────────────────────────────────
 const FLAGS = {
@@ -382,18 +383,22 @@ async function loadMatches({ predictionsOnly = false } = {}){
 
   // If we already have match data and just need to refresh predictions (post-login)
   if(predictionsOnly && allMatches.length){
-    if(!token){ myPredictions = {}; renderMatches(); return; }
-    const pRes = await api('GET', '/api/predictions');
-    if(gen !== _matchLoadGen) return;  // a newer load started, discard
-    myPredictions = pRes.ok ? pRes.data : {};
+    if(!token){ myPredictions = {}; myOUPredictions = {}; renderMatches(); return; }
+    const [pRes, ouRes] = await Promise.all([
+      api('GET', '/api/predictions'),
+      api('GET', '/api/ou_predictions')
+    ]);
+    if(gen !== _matchLoadGen) return;
+    myPredictions   = pRes.ok  ? pRes.data  : {};
+    myOUPredictions = ouRes.ok ? ouRes.data : {};
     renderMatches();
     return;
   }
 
   const [mRes, pRes, meRes] = await Promise.all([
     api('GET', '/api/espn/matches'),
-    token ? api('GET', '/api/predictions') : Promise.resolve({ok:false, data:{}}),
-    token ? api('GET', '/api/me')           : Promise.resolve({ok:false, data:{}})
+    token ? api('GET', '/api/predictions')   : Promise.resolve({ok:false, data:{}}),
+    token ? api('GET', '/api/me')            : Promise.resolve({ok:false, data:{}})
   ]);
 
   if(gen !== _matchLoadGen) return;  // a newer load started, discard this stale result
@@ -404,8 +409,9 @@ async function loadMatches({ predictionsOnly = false } = {}){
     return;
   }
 
-  allMatches    = mRes.data || [];
-  myPredictions = pRes.ok ? pRes.data : {};
+  allMatches      = mRes.data || [];
+  myPredictions   = pRes.ok ? pRes.data : {};
+  myOUPredictions = meRes.ok ? (meRes.data.ouPredictions || {}) : {};
 
   // Sync token count from server — catches auto-awarded tokens
   if(meRes.ok && meRes.data.tokens !== undefined){
@@ -567,6 +573,54 @@ function matchCardHTML(m){
     predHtml = `<div class="predict-btns"><span class="locked-tag">Login to predict</span></div>`;
   }
 
+  // ── Over/Under section ──────────────────────────────────────────────────
+  let ouHtml = '';
+  if(m.ouLine !== null && m.ouLine !== undefined){
+    const ouPred    = myOUPredictions[m.id];
+    const ouAdminRes= m.ouResult;                  // auto-derived from score
+    const ouCorrect = ouPred && ouAdminRes && ouPred.prediction === ouAdminRes;
+    const ouWrong   = ouPred && ouAdminRes && ouPred.prediction !== ouAdminRes;
+
+    let ouResultBadge = '';
+    if(ouAdminRes){
+      const cl = ouAdminRes==='over' ? 'result-home' : 'result-away';
+      ouResultBadge = `<span class="result-badge ${cl}">✓ ${ouAdminRes.toUpperCase()}</span>`;
+    }
+
+    let ouBtns = '';
+    if(ouAdminRes && ouPred){
+      const cl = ouCorrect?' correct-pred':ouWrong?' wrong-pred':'';
+      ouBtns = `<button class="pred-btn selected${cl}" disabled>
+        O/U ${ouPred.prediction.toUpperCase()} ${ouCorrect?'✓ +300':'✗ -200'}
+      </button>`;
+    } else if(!effectiveLocked && token && !ouAdminRes){
+      const sel = ouPred ? ouPred.prediction : null;
+      ouBtns = `
+        <button class="pred-btn${sel==='over'?' selected':''}" onclick="predictOU('${m.id}','over')">
+          OVER ${m.ouLine}
+        </button>
+        <button class="pred-btn${sel==='under'?' selected':''}" onclick="predictOU('${m.id}','under')">
+          UNDER ${m.ouLine}
+        </button>`;
+    } else if(ouPred && !ouAdminRes){
+      const liveTag = isLive ? '🔴' : isDone ? 'FT' : '🔒';
+      ouBtns = `<button class="pred-btn selected" disabled>${liveTag} O/U ${ouPred.prediction.toUpperCase()}</button>`;
+    } else if(!token){
+      ouBtns = `<span class="locked-tag">Login for O/U</span>`;
+    }
+
+    ouHtml = `<div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px">
+      <div style="font-size:.68rem;color:var(--muted);margin-bottom:5px;text-align:center">
+        O/U ${m.ouLine} &nbsp;·&nbsp;
+        <span style="color:var(--green)">Over ${m.overOdds>0?'+':''}${m.overOdds}</span> &nbsp;/&nbsp;
+        <span style="color:var(--red)">Under ${m.underOdds>0?'+':''}${m.underOdds}</span>
+        &nbsp;·&nbsp;<span style="color:var(--muted);font-size:.62rem">via DraftKings/ESPN</span>
+      </div>
+      ${ouResultBadge}
+      <div class="predict-btns">${ouBtns}</div>
+    </div>`;
+  }
+
   return `<div class="${cardCls}" id="mc-${m.id}">
     ${teamHTML(m,'home')}
     <div class="match-center">
@@ -574,6 +628,7 @@ function matchCardHTML(m){
       ${scoreHtml}
       ${resultBadge}
       ${predHtml}
+      ${ouHtml}
     </div>
     ${teamHTML(m,'away')}
   </div>`;
@@ -592,6 +647,24 @@ async function predict(matchId, prediction){
     const card = document.getElementById('mc-'+matchId);
     if(card && m) card.outerHTML = matchCardHTML(m);
     toast(prev ? 'Prediction updated!' : `Placed! -200🪙 · Balance: ${myTokens.toLocaleString()}`);
+  } else {
+    toast(res.data.error || 'Failed', 'error');
+  }
+}
+
+async function predictOU(matchId, prediction){
+  if(!token){ showPage('auth'); return; }
+  const res = await api('POST', '/api/predict/ou', {match_id: matchId, prediction});
+  if(res.ok){
+    myTokens = res.data.tokens;
+    localStorage.setItem('wc_tokens', myTokens);
+    updateNav();
+    const prev = myOUPredictions[matchId];
+    myOUPredictions[matchId] = { prediction };
+    const m = allMatches.find(x=>x.id===matchId);
+    const card = document.getElementById('mc-'+matchId);
+    if(card && m) card.outerHTML = matchCardHTML(m);
+    toast(prev ? 'O/U updated!' : `O/U placed! -200🪙 · Balance: ${myTokens.toLocaleString()}`);
   } else {
     toast(res.data.error || 'Failed', 'error');
   }
@@ -658,15 +731,16 @@ async function loadMyPicks(){
   const [meRes, mRes] = await Promise.all([api('GET','/api/me'), api('GET','/api/espn/matches')]);
   if(!meRes.ok){ showPage('auth'); return; }
   const me = meRes.data;
-  allMatches    = mRes.ok ? mRes.data : allMatches;
-  myPredictions = me.predictions || {};
+  allMatches      = mRes.ok ? mRes.data : allMatches;
+  myPredictions   = me.predictions    || {};
+  myOUPredictions = me.ouPredictions  || {};
 
   // Always sync token display from server
   myTokens = me.tokens;
   localStorage.setItem('wc_tokens', myTokens);
   updateNav();
 
-  const total    = Object.keys(myPredictions).length;
+  const total    = Object.keys(myPredictions).length + Object.keys(myOUPredictions).length;
   const correct  = me.correct || 0;
   const accuracy = total>0 ? Math.round(correct/total*100)+'%' : '-';
 
@@ -677,7 +751,8 @@ async function loadMyPicks(){
     <div class="stat-card"><div class="stat-val">${accuracy}</div><div class="stat-label">Accuracy</div></div>
   `;
 
-  const predicted = allMatches.filter(m => myPredictions[m.id]);
+  // Show matches where user has either a win/loss OR an O/U prediction
+  const predicted = allMatches.filter(m => myPredictions[m.id] || myOUPredictions[m.id]);
   if(!predicted.length){
     document.getElementById('my-picks-container').innerHTML =
       '<div class="empty">No predictions yet — go to Matches to start!</div>'; return;

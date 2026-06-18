@@ -198,6 +198,53 @@ def db_all_predictions():
         return {doc["username"]: doc.get("picks", {}) for doc in docs}
     return _jload("predictions", {})
 
+# ── O/U predictions ───────────────────────────────────────────────────────────
+def db_get_ou_predictions(username):
+    db = get_db()
+    if db is not None:
+        doc = _safe_db(lambda: db.ou_predictions.find_one({"username": username}, {"_id": 0}), None)
+        return doc.get("picks", {}) if doc else {}
+    return _jload("ou_predictions", {}).get(username, {})
+
+def db_set_ou_prediction(username, match_id, prediction):
+    db = get_db()
+    if db is not None:
+        _safe_db(lambda: db.ou_predictions.update_one(
+            {"username": username},
+            {"$set": {"picks." + match_id: {"prediction": prediction, "ts": time.time()}}},
+            upsert=True), None)
+        return
+    preds = _jload("ou_predictions", {})
+    if username not in preds:
+        preds[username] = {}
+    preds[username][match_id] = {"prediction": prediction, "ts": time.time()}
+    _jsave("ou_predictions", preds)
+
+def db_all_ou_predictions():
+    db = get_db()
+    if db is not None:
+        docs = _safe_db(lambda: list(db.ou_predictions.find({}, {"_id": 0})), [])
+        return {doc["username"]: doc.get("picks", {}) for doc in docs}
+    return _jload("ou_predictions", {})
+
+def db_get_ou_override(match_id):
+    db = get_db()
+    if db is not None:
+        doc = _safe_db(lambda: db.ou_overrides.find_one({"match_id": match_id}, {"_id": 0}), None)
+        return doc or {}
+    return _jload("ou_overrides", {}).get(match_id, {})
+
+def db_set_ou_override(match_id, data):
+    db = get_db()
+    if db is not None:
+        _safe_db(lambda: db.ou_overrides.replace_one(
+            {"match_id": match_id},
+            {"match_id": match_id, **data}, upsert=True), None)
+        return
+    overrides = _jload("ou_overrides", {})
+    overrides[match_id] = data
+    _jsave("ou_overrides", overrides)
+
 def db_get_override(match_id):
     db = get_db()
     if db is not None:
@@ -312,6 +359,24 @@ def fetch_espn():
             if state == "post" and home_score != "" and away_score != "":
                 espn_result = _score_to_result(home_score, away_score)
 
+            # O/U odds from competition-level odds field (populated for upcoming matches)
+            odds      = comp.get("odds", {}) or {}
+            ou_line   = odds.get("overUnder")    # e.g. 2.5
+            over_odds = odds.get("overOdds")     # e.g. +110
+            under_odds= odds.get("underOdds")    # e.g. -135
+
+            # For finished matches derive O/U result from final score
+            ou_result = None
+            if state == "post" and home_score != "" and away_score != "":
+                try:
+                    total = int(home_score) + int(away_score)
+                    if ou_line is not None:
+                        if total > ou_line:   ou_result = "over"
+                        elif total < ou_line: ou_result = "under"
+                        # exact line = push (no result, no award)
+                except (ValueError, TypeError):
+                    pass
+
             matches.append({
                 "id":          eid,
                 "home":        home_t.get("displayName", "TBD"),
@@ -329,6 +394,10 @@ def fetch_espn():
                 "statusState": state,
                 "statusDesc":  desc,
                 "espnResult":  espn_result,
+                "ouLine":      ou_line,
+                "overOdds":    over_odds,
+                "underOdds":   under_odds,
+                "ouResult":    ou_result,
             })
 
         # Auto-award tokens for finished matches not yet processed
@@ -340,33 +409,46 @@ def fetch_espn():
 
 
 def _auto_award(matches):
-    """Automatically set result and award tokens for finished matches
-    where ESPN has a final score but no admin result is recorded yet."""
+    """Auto-award tokens for finished matches (win/draw and O/U) from ESPN scores."""
     for m in matches:
-        if m["statusState"] != "post" or not m["espnResult"]:
+        if m["statusState"] != "post":
             continue
-        ov = db_get_override(m["id"])
-        if ov.get("result"):
-            continue  # already processed
 
-        result = m["espnResult"]
-        print("[AUTO] Awarding result {} for match {} ({} vs {})".format(
-            result, m["id"], m["home"], m["away"]))
+        # ── Win/Draw/Loss result ──────────────────────────────────────────────
+        if m["espnResult"]:
+            ov = db_get_override(m["id"])
+            if not ov.get("result"):
+                result = m["espnResult"]
+                print("[AUTO] Win/Loss result {} for {} vs {}".format(
+                    result, m["home"], m["away"]))
+                db_set_override(m["id"], {"result": result, "locked": True, "auto": True})
+                all_preds = db_all_predictions()
+                for uname, picks in all_preds.items():
+                    p = picks.get(m["id"])
+                    if p and p.get("prediction") == result:
+                        u = db_get_user(uname)
+                        if u:
+                            u["tokens"]  = u.get("tokens", 0) + WIN_REWARD
+                            u["correct"] = u.get("correct", 0) + 1
+                            db_set_user(uname, u)
 
-        db_set_override(m["id"], {"result": result, "locked": True, "auto": True})
-
-        all_preds = db_all_predictions()
-        winners = []
-        for uname, picks in all_preds.items():
-            p = picks.get(m["id"])
-            if p and p.get("prediction") == result:
-                u = db_get_user(uname)
-                if u:
-                    u["tokens"]  = u.get("tokens", 0) + WIN_REWARD
-                    u["correct"] = u.get("correct", 0) + 1
-                    db_set_user(uname, u)
-                    winners.append(uname)
-        print("[AUTO] Winners for {}: {}".format(m["id"], winners))
+        # ── Over/Under result ─────────────────────────────────────────────────
+        if m["ouResult"]:
+            ou_ov = db_get_ou_override(m["id"])
+            if not ou_ov.get("result"):
+                ou_result = m["ouResult"]
+                print("[AUTO] O/U result {} for {} vs {} (line {})".format(
+                    ou_result, m["home"], m["away"], m["ouLine"]))
+                db_set_ou_override(m["id"], {"result": ou_result, "locked": True, "auto": True})
+                all_ou = db_all_ou_predictions()
+                for uname, picks in all_ou.items():
+                    p = picks.get(m["id"])
+                    if p and p.get("prediction") == ou_result:
+                        u = db_get_user(uname)
+                        if u:
+                            u["tokens"]  = u.get("tokens", 0) + WIN_REWARD
+                            u["correct"] = u.get("correct", 0) + 1
+                            db_set_user(uname, u)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def hash_pw(pw):
@@ -489,10 +571,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not user:
                 json_resp(self, 401, {"error": "Unauthorized"}); return
             json_resp(self, 200, {
-                "username":    uname,
-                "tokens":      user.get("tokens", 0),
-                "correct":     user.get("correct", 0),
-                "predictions": db_get_predictions(uname),
+                "username":       uname,
+                "tokens":         user.get("tokens", 0),
+                "correct":        user.get("correct", 0),
+                "predictions":    db_get_predictions(uname),
+                "ouPredictions":  db_get_ou_predictions(uname),
             })
 
         elif path == "/api/predictions":
@@ -500,6 +583,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not user:
                 json_resp(self, 401, {"error": "Unauthorized"}); return
             json_resp(self, 200, db_get_predictions(uname))
+
+        elif path == "/api/ou_predictions":
+            user, uname = auth_user(self)
+            if not user:
+                json_resp(self, 401, {"error": "Unauthorized"}); return
+            json_resp(self, 200, db_get_ou_predictions(uname))
 
         else:
             json_resp(self, 404, {"error": "Not found"})
@@ -575,6 +664,44 @@ class Handler(http.server.BaseHTTPRequestHandler):
             db_set_user(uname, user)
             db_set_prediction(uname, match_id, prediction)
             json_resp(self, 200, {"message": "Prediction placed", "tokens": user["tokens"]})
+
+        elif path == "/api/predict/ou":
+            user, uname = auth_user(self)
+            if not user:
+                json_resp(self, 401, {"error": "Unauthorized"}); return
+            match_id   = str(body.get("match_id", "")).strip()
+            prediction = body.get("prediction")
+            if prediction not in ("over", "under"):
+                json_resp(self, 400, {"error": "prediction must be over or under"}); return
+            if not match_id:
+                json_resp(self, 400, {"error": "match_id required"}); return
+
+            cached = _espn_cache.get("data") or fetch_espn() or []
+            m_espn = next((m for m in cached if m["id"] == match_id), None)
+            if m_espn is None:
+                json_resp(self, 404, {"error": "Match not found"}); return
+            if m_espn.get("ouLine") is None:
+                json_resp(self, 400, {"error": "No O/U line available for this match"}); return
+            if m_espn["statusState"] in ("in", "post"):
+                json_resp(self, 400, {"error": "Match has already started"}); return
+
+            ou_ov = db_get_ou_override(match_id)
+            if ou_ov.get("locked") or ou_ov.get("result"):
+                json_resp(self, 400, {"error": "O/U is locked for this match"}); return
+
+            existing = db_get_ou_predictions(uname).get(match_id)
+            if existing:
+                db_set_ou_prediction(uname, match_id, prediction)
+                json_resp(self, 200, {"message": "O/U prediction updated", "tokens": user.get("tokens", 0)}); return
+
+            if user.get("tokens", 0) < BET_COST:
+                json_resp(self, 400, {"error": "Not enough tokens"}); return
+
+            user["tokens"]     -= BET_COST
+            user["predictions"] = user.get("predictions", 0) + 1
+            db_set_user(uname, user)
+            db_set_ou_prediction(uname, match_id, prediction)
+            json_resp(self, 200, {"message": "O/U prediction placed", "tokens": user["tokens"]})
 
         elif path == "/api/admin/result":
             if not check_admin(body):
