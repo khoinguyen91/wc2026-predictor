@@ -411,45 +411,55 @@ def fetch_espn():
 
 def _auto_award(matches):
     """Auto-award tokens for finished matches (win/draw and O/U) from ESPN scores."""
-    for m in matches:
-        if m["statusState"] != "post":
-            continue
+    try:
+        # Load all predictions once — avoids repeated DB calls per match
+        all_preds = db_all_predictions()
+        all_ou    = db_all_ou_predictions()
 
-        # ── Win/Draw/Loss result ──────────────────────────────────────────────
-        if m["espnResult"]:
-            ov = db_get_override(m["id"])
-            if not ov.get("result"):
-                result = m["espnResult"]
-                print("[AUTO] Win/Loss result {} for {} vs {}".format(
-                    result, m["home"], m["away"]))
-                db_set_override(m["id"], {"result": result, "locked": True, "auto": True})
-                all_preds = db_all_predictions()
-                for uname, picks in all_preds.items():
-                    p = picks.get(m["id"])
-                    if p and p.get("prediction") == result:
-                        u = db_get_user(uname)
-                        if u:
-                            u["tokens"]  = u.get("tokens", 0) + WIN_REWARD
-                            u["correct"] = u.get("correct", 0) + 1
-                            db_set_user(uname, u)
+        for m in matches:
+            if m["statusState"] != "post":
+                continue
 
-        # ── Over/Under result ─────────────────────────────────────────────────
-        if m["ouResult"]:
-            ou_ov = db_get_ou_override(m["id"])
-            if not ou_ov.get("result"):
-                ou_result = m["ouResult"]
-                print("[AUTO] O/U result {} for {} vs {} (line {})".format(
-                    ou_result, m["home"], m["away"], m["ouLine"]))
-                db_set_ou_override(m["id"], {"result": ou_result, "locked": True, "auto": True})
-                all_ou = db_all_ou_predictions()
-                for uname, picks in all_ou.items():
-                    p = picks.get(m["id"])
-                    if p and p.get("prediction") == ou_result:
-                        u = db_get_user(uname)
-                        if u:
-                            u["tokens"]  = u.get("tokens", 0) + WIN_REWARD
-                            u["correct"] = u.get("correct", 0) + 1
-                            db_set_user(uname, u)
+            # ── Win/Draw/Loss ─────────────────────────────────────────────────
+            try:
+                if m.get("espnResult"):
+                    ov = db_get_override(m["id"])
+                    if not ov.get("result"):
+                        result = m["espnResult"]
+                        print("[AUTO] Win result {} for {} vs {}".format(result, m["home"], m["away"]))
+                        db_set_override(m["id"], {"result": result, "locked": True, "auto": True})
+                        for uname, picks in all_preds.items():
+                            p = picks.get(m["id"])
+                            if p and p.get("prediction") == result:
+                                u = db_get_user(uname)
+                                if u:
+                                    u["tokens"]  = u.get("tokens", 0) + WIN_REWARD
+                                    u["correct"] = u.get("correct", 0) + 1
+                                    db_set_user(uname, u)
+            except Exception as e:
+                print("[AUTO] Win award error for {}: {}".format(m["id"], e))
+
+            # ── Over/Under ────────────────────────────────────────────────────
+            try:
+                if m.get("ouResult"):
+                    ou_ov = db_get_ou_override(m["id"])
+                    if not ou_ov.get("result"):
+                        ou_result = m["ouResult"]
+                        print("[AUTO] O/U result {} for {} vs {}".format(ou_result, m["home"], m["away"]))
+                        db_set_ou_override(m["id"], {"result": ou_result, "locked": True, "auto": True})
+                        for uname, picks in all_ou.items():
+                            p = picks.get(m["id"])
+                            if p and p.get("prediction") == ou_result:
+                                u = db_get_user(uname)
+                                if u:
+                                    u["tokens"]  = u.get("tokens", 0) + WIN_REWARD
+                                    u["correct"] = u.get("correct", 0) + 1
+                                    db_set_user(uname, u)
+            except Exception as e:
+                print("[AUTO] O/U award error for {}: {}".format(m["id"], e))
+
+    except Exception as e:
+        print("[AUTO] _auto_award failed:", e)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def hash_pw(pw):
@@ -492,6 +502,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.end_headers()
+
+    def handle_one_request(self):
+        """Override to catch all unhandled exceptions and return 500."""
+        try:
+            super().handle_one_request()
+        except Exception as e:
+            print("[SERVER] Unhandled exception:", e)
+            try:
+                json_resp(self, 500, {"error": "Internal server error"})
+            except Exception:
+                pass
 
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path.rstrip("/")
