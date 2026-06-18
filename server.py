@@ -359,11 +359,12 @@ def fetch_espn():
             if state == "post" and home_score != "" and away_score != "":
                 espn_result = _score_to_result(home_score, away_score)
 
-            # O/U odds from competition-level odds field (populated for upcoming matches)
-            odds      = comp.get("odds", {}) or {}
-            ou_line   = odds.get("overUnder")    # e.g. 2.5
-            over_odds = odds.get("overOdds")     # e.g. +110
-            under_odds= odds.get("underOdds")    # e.g. -135
+            # O/U odds — ESPN returns odds as a LIST, first item is the primary provider
+            odds_raw   = comp.get("odds") or []
+            odds       = odds_raw[0] if isinstance(odds_raw, list) and odds_raw else (odds_raw if isinstance(odds_raw, dict) else {})
+            ou_line    = odds.get("overUnder") or None
+            over_odds  = odds.get("overOdds")  or None
+            under_odds = odds.get("underOdds") or None
 
             # For finished matches derive O/U result from final score
             ou_result = None
