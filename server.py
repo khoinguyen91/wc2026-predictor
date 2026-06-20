@@ -791,6 +791,32 @@ class Handler(http.server.BaseHTTPRequestHandler):
             json_resp(self, 200, {"message": "Result set", "winners": winners,
                                    "winner_count": len(winners)})
 
+        elif path == "/api/admin/ou_result":
+            # Manually award O/U when auto-award couldn't resolve the line
+            if not check_admin(body):
+                json_resp(self, 403, {"error": "Forbidden"}); return
+            match_id  = str(body.get("match_id", "")).strip()
+            ou_result = body.get("result")   # "over" or "under"
+            if ou_result not in ("over", "under"):
+                json_resp(self, 400, {"error": "result must be over or under"}); return
+            ou_ov = db_get_ou_override(match_id)
+            if ou_ov.get("result"):
+                json_resp(self, 400, {"error": "O/U result already set"}); return
+            db_set_ou_override(match_id, {"result": ou_result, "locked": True, "manual": True})
+            all_ou = db_all_ou_predictions()
+            winners = []
+            for uname, picks in all_ou.items():
+                p = picks.get(match_id)
+                if p and p.get("prediction") == ou_result:
+                    u = db_get_user(uname)
+                    if u:
+                        u["tokens"]  = u.get("tokens", 0) + WIN_REWARD
+                        u["correct"] = u.get("correct", 0) + 1
+                        db_set_user(uname, u)
+                        winners.append(uname)
+            json_resp(self, 200, {"message": "O/U result set", "winners": winners,
+                                   "winner_count": len(winners)})
+
         elif path == "/api/admin/lock":
             if not check_admin(body):
                 json_resp(self, 403, {"error": "Forbidden"}); return

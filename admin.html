@@ -191,7 +191,7 @@ function renderMatchTable(){
   });
 
   let html=`<table><thead><tr>
-    <th>Match</th><th>Kick-off (GMT+7)</th><th>Status</th><th>Score</th><th>Set Result</th><th>Lock</th>
+    <th>Match</th><th>Kick-off (GMT+7)</th><th>Status</th><th>Score</th><th>Set Result</th><th>Set O/U</th><th>Lock</th>
   </tr></thead><tbody>`;
 
   list.forEach(m=>{
@@ -230,12 +230,26 @@ function renderMatchTable(){
     const homeLogo = m.homeLogo ? `<img class="team-logo" src="${m.homeLogo}" alt="">` : '';
     const awayLogo = m.awayLogo ? `<img class="team-logo" src="${m.awayLogo}" alt="">` : '';
 
+    const ouDone = m.ouResult;
+    const ouLine = m.ouLine ? `O/U ${m.ouLine}` : '';
+    const ouCell = ouDone
+      ? `<span style="color:var(--green);font-size:.76rem">✓ ${ouDone.toUpperCase()}</span>`
+      : (m.statusState==='post'
+          ? `<select id="ou-${m.id}" style="width:auto;padding:3px 7px;font-size:.78rem">
+               <option value="">-- ${ouLine||'pick'} --</option>
+               <option value="over">⬆ Over</option>
+               <option value="under">⬇ Under</option>
+             </select>
+             <button class="btn btn-sm btn-green" style="margin-left:5px" onclick="setOUResult('${m.id}')">Set</button>`
+          : `<span style="color:var(--muted);font-size:.75rem">${ouLine||'No O/U'}</span>`);
+
     html+=`<tr>
       <td>${homeLogo}${m.home} <span style="color:var(--muted)">vs</span> ${m.away}${awayLogo}</td>
       <td style="font-size:.76rem;color:var(--muted);white-space:nowrap">${fmtTime(m.time)}</td>
       <td>${statusBadge}</td>
       <td>${scoreCell}</td>
       <td>${resultCell}</td>
+      <td>${ouCell}</td>
       <td>${lockCell}</td>
     </tr>`;
   });
@@ -255,6 +269,20 @@ async function setResult(matchId, homeName, awayName){
     loadAll();
   } else {
     showMsg('result-msg', res.data.error||'Error',false);
+  }
+}
+
+async function setOUResult(matchId){
+  const sel = document.getElementById('ou-'+matchId);
+  if(!sel) return;
+  const result = sel.value;
+  if(!result){ alert('Pick Over or Under first'); return; }
+  const res = await api('POST','/api/admin/ou_result',{admin_password:adminPw, match_id:matchId, result});
+  if(res.ok){
+    showMsg('result-msg',`✓ O/U result set! ${res.data.winner_count} winner(s) awarded 500 tokens.`,true);
+    loadAll();
+  } else {
+    showMsg('result-msg', res.data.error||'Error', false);
   }
 }
 
