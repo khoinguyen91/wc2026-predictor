@@ -429,6 +429,12 @@ def _auto_award(matches):
         all_ou    = db_all_ou_predictions()
 
         for m in matches:
+            # Cache ouLine into override while ESPN still provides it (pre/live)
+            if m.get("ouLine") and m["statusState"] in ("pre", "in"):
+                ou_ov = db_get_ou_override(m["id"])
+                if not ou_ov.get("ouLine"):
+                    ou_ov["ouLine"] = m["ouLine"]
+                    db_set_ou_override(m["id"], ou_ov)
             if m["statusState"] != "post":
                 continue
 
@@ -459,21 +465,26 @@ def _auto_award(matches):
                     ou_line_live = m.get("ouLine")
                     ou_result = m.get("ouResult")  # derived when ouLine was still available
 
-                    # If ouResult not computed (ESPN dropped ouLine), try using stored lines
+                    # If ouResult not computed (ESPN dropped ouLine after FT), use stored line
                     if not ou_result and m["statusState"] == "post":
                         home_s = m.get("homeScore", "")
                         away_s = m.get("awayScore", "")
                         if home_s != "" and away_s != "":
                             try:
                                 total = int(home_s) + int(away_s)
-                                # Find any prediction that has the stored ouLine
-                                for uname, picks in all_ou.items():
-                                    p = picks.get(m["id"])
-                                    if p and p.get("ouLine"):
-                                        stored_line = float(p["ouLine"])
-                                        if total > stored_line:   ou_result = "over"
-                                        elif total < stored_line: ou_result = "under"
-                                        break
+                                # 1st choice: ouLine stored in override record (most reliable)
+                                stored_line = ou_ov.get("ouLine")
+                                # 2nd choice: ouLine stored in any user's prediction
+                                if not stored_line:
+                                    for uname, picks in all_ou.items():
+                                        p = picks.get(m["id"])
+                                        if p and p.get("ouLine"):
+                                            stored_line = p["ouLine"]
+                                            break
+                                if stored_line:
+                                    stored_line = float(stored_line)
+                                    if total > stored_line:   ou_result = "over"
+                                    elif total < stored_line: ou_result = "under"
                             except (ValueError, TypeError):
                                 pass
 
