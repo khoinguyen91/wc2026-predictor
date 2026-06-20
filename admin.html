@@ -81,6 +81,11 @@ tr:last-child td{border-bottom:none}
       Data sourced live from ESPN. Set result to award tokens to correct predictors.
       Lock/unlock controls whether new predictions are accepted.
     </p>
+    <div style="margin-bottom:12px">
+      <button class="btn btn-primary" onclick="reprocessOU()">🔄 Reprocess All O/U Awards</button>
+      <span style="color:var(--muted);font-size:.78rem;margin-left:10px">Re-runs auto-award for all finished matches that missed O/U rewards</span>
+    </div>
+    <div id="reprocess-msg"></div>
     <div class="filter-bar" id="stage-filter"></div>
     <div id="matches-table-wrap"><em style="color:var(--muted)">Loading…</em></div>
     <div id="result-msg"></div>
@@ -269,6 +274,23 @@ async function setResult(matchId, homeName, awayName){
     loadAll();
   } else {
     showMsg('result-msg', res.data.error||'Error',false);
+  }
+}
+
+async function reprocessOU(){
+  if(!confirm('Reprocess O/U awards for all finished matches? This will award tokens for any missed O/U predictions.')) return;
+  const res = await api('POST','/api/admin/reprocess_ou',{admin_password:adminPw});
+  const msgEl = document.getElementById('reprocess-msg');
+  if(res.ok){
+    const p = res.data.processed;
+    msgEl.className='msg msg-ok';
+    msgEl.textContent = p.length
+      ? `✓ Processed ${p.length} match(es): ${p.join(', ')}`
+      : `✓ No new O/U results to process (${res.data.skipped_count} already done)`;
+    if(p.length) loadAll();
+  } else {
+    msgEl.className='msg msg-err';
+    msgEl.textContent = res.data.error||'Error';
   }
 }
 

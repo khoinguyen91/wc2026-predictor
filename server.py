@@ -828,6 +828,51 @@ class Handler(http.server.BaseHTTPRequestHandler):
             json_resp(self, 200, {"message": "O/U result set", "winners": winners,
                                    "winner_count": len(winners)})
 
+        elif path == "/api/admin/reprocess_ou":
+            # Reprocess ALL finished matches using stored ouLine from override or predictions
+            if not check_admin(body):
+                json_resp(self, 403, {"error": "Forbidden"}); return
+            cached = _espn_cache.get("data") or fetch_espn() or []
+            all_ou = db_all_ou_predictions()
+            processed, skipped = [], []
+            for m in cached:
+                if m["statusState"] != "post":
+                    continue
+                ou_ov = db_get_ou_override(m["id"])
+                if ou_ov.get("result"):
+                    skipped.append(m["id"])
+                    continue
+                # Find stored ouLine
+                stored_line = ou_ov.get("ouLine")
+                if not stored_line:
+                    for uname, picks in all_ou.items():
+                        p = picks.get(m["id"])
+                        if p and p.get("ouLine"):
+                            stored_line = p["ouLine"]
+                            break
+                if not stored_line:
+                    continue
+                try:
+                    total = int(m["homeScore"]) + int(m["awayScore"])
+                    line  = float(stored_line)
+                    if total > line:   ou_result = "over"
+                    elif total < line: ou_result = "under"
+                    else: continue  # push
+                except (ValueError, TypeError):
+                    continue
+                db_set_ou_override(m["id"], {"result": ou_result, "locked": True, "auto": True,
+                                              "ouLine": stored_line})
+                for uname, picks in all_ou.items():
+                    p = picks.get(m["id"])
+                    if p and p.get("prediction") == ou_result:
+                        u = db_get_user(uname)
+                        if u:
+                            u["tokens"]  = u.get("tokens", 0) + WIN_REWARD
+                            u["correct"] = u.get("correct", 0) + 1
+                            db_set_user(uname, u)
+                processed.append("{} vs {} → {}".format(m["home"], m["away"], ou_result))
+            json_resp(self, 200, {"processed": processed, "skipped_count": len(skipped)})
+
         elif path == "/api/admin/lock":
             if not check_admin(body):
                 json_resp(self, 403, {"error": "Forbidden"}); return
