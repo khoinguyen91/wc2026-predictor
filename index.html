@@ -756,7 +756,7 @@ async function loadMyPicks(){
   localStorage.setItem('wc_tokens', myTokens);
   updateNav();
 
-  const total    = Object.keys(myPredictions).length + Object.keys(myOUPredictions).length;
+  const total    = me.predictionCount || 0;  // server counts both win/draw + O/U bets
   const correct  = me.correct || 0;
   const accuracy = total>0 ? Math.round(correct/total*100)+'%' : '-';
 

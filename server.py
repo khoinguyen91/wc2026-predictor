@@ -206,18 +206,21 @@ def db_get_ou_predictions(username):
         return doc.get("picks", {}) if doc else {}
     return _jload("ou_predictions", {}).get(username, {})
 
-def db_set_ou_prediction(username, match_id, prediction):
+def db_set_ou_prediction(username, match_id, prediction, ou_line=None):
+    record = {"prediction": prediction, "ts": time.time()}
+    if ou_line is not None:
+        record["ouLine"] = ou_line
     db = get_db()
     if db is not None:
         _safe_db(lambda: db.ou_predictions.update_one(
             {"username": username},
-            {"$set": {"picks." + match_id: {"prediction": prediction, "ts": time.time()}}},
+            {"$set": {"picks." + match_id: record}},
             upsert=True), None)
         return
     preds = _jload("ou_predictions", {})
     if username not in preds:
         preds[username] = {}
-    preds[username][match_id] = {"prediction": prediction, "ts": time.time()}
+    preds[username][match_id] = record
     _jsave("ou_predictions", preds)
 
 def db_all_ou_predictions():
@@ -244,6 +247,13 @@ def db_set_ou_override(match_id, data):
     overrides = _jload("ou_overrides", {})
     overrides[match_id] = data
     _jsave("ou_overrides", overrides)
+
+def db_all_ou_overrides():
+    db = get_db()
+    if db is not None:
+        docs = _safe_db(lambda: list(db.ou_overrides.find({}, {"_id": 0})), [])
+        return {doc["match_id"]: doc for doc in docs}
+    return _jload("ou_overrides", {})
 
 def db_get_override(match_id):
     db = get_db()
@@ -443,10 +453,31 @@ def _auto_award(matches):
 
             # ── Over/Under ────────────────────────────────────────────────────
             try:
-                if m.get("ouResult"):
-                    ou_ov = db_get_ou_override(m["id"])
-                    if not ou_ov.get("result"):
-                        ou_result = m["ouResult"]
+                ou_ov = db_get_ou_override(m["id"])
+                if not ou_ov.get("result"):
+                    # ESPN removes ouLine after match ends — fall back to stored line in predictions
+                    ou_line_live = m.get("ouLine")
+                    ou_result = m.get("ouResult")  # derived when ouLine was still available
+
+                    # If ouResult not computed (ESPN dropped ouLine), try using stored lines
+                    if not ou_result and m["statusState"] == "post":
+                        home_s = m.get("homeScore", "")
+                        away_s = m.get("awayScore", "")
+                        if home_s != "" and away_s != "":
+                            try:
+                                total = int(home_s) + int(away_s)
+                                # Find any prediction that has the stored ouLine
+                                for uname, picks in all_ou.items():
+                                    p = picks.get(m["id"])
+                                    if p and p.get("ouLine"):
+                                        stored_line = float(p["ouLine"])
+                                        if total > stored_line:   ou_result = "over"
+                                        elif total < stored_line: ou_result = "under"
+                                        break
+                            except (ValueError, TypeError):
+                                pass
+
+                    if ou_result:
                         print("[AUTO] O/U result {} for {} vs {}".format(ou_result, m["home"], m["away"]))
                         db_set_ou_override(m["id"], {"result": ou_result, "locked": True, "auto": True})
                         for uname, picks in all_ou.items():
@@ -560,13 +591,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
             matches = fetch_espn()
             if matches is None:
                 json_resp(self, 502, {"error": "Could not reach ESPN. Check internet/proxy."}); return
-            overrides = db_all_overrides()
+            overrides    = db_all_overrides()
+            ou_overrides = db_all_ou_overrides()
             result = []
             for m in matches:
-                ov = overrides.get(m["id"], {})
+                ov    = overrides.get(m["id"], {})
+                ou_ov = ou_overrides.get(m["id"], {})
                 entry = dict(m)
                 entry["locked"]      = ov.get("locked", False) or m["statusState"] in ("in", "post")
                 entry["adminResult"] = ov.get("result")
+                # Use stored O/U result (from override) as fallback when ESPN drops the line
+                entry["ouResult"]    = m.get("ouResult") or ou_ov.get("result")
                 result.append(entry)
             json_resp(self, 200, result)
 
@@ -595,11 +630,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not user:
                 json_resp(self, 401, {"error": "Unauthorized"}); return
             json_resp(self, 200, {
-                "username":       uname,
-                "tokens":         user.get("tokens", 0),
-                "correct":        user.get("correct", 0),
-                "predictions":    db_get_predictions(uname),
-                "ouPredictions":  db_get_ou_predictions(uname),
+                "username":         uname,
+                "tokens":           user.get("tokens", 0),
+                "correct":          user.get("correct", 0),
+                "predictions":      db_get_predictions(uname),    # dict of win/draw picks
+                "ouPredictions":    db_get_ou_predictions(uname), # dict of O/U picks
+                "predictionCount":  user.get("predictions", 0),   # total count (both types)
             })
 
         elif path == "/api/predictions":
@@ -713,9 +749,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if ou_ov.get("locked") or ou_ov.get("result"):
                 json_resp(self, 400, {"error": "O/U is locked for this match"}); return
 
+            ou_line_val = m_espn.get("ouLine")
             existing = db_get_ou_predictions(uname).get(match_id)
             if existing:
-                db_set_ou_prediction(uname, match_id, prediction)
+                db_set_ou_prediction(uname, match_id, prediction, ou_line_val)
                 json_resp(self, 200, {"message": "O/U prediction updated", "tokens": user.get("tokens", 0)}); return
 
             if user.get("tokens", 0) < BET_COST:
@@ -724,7 +761,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             user["tokens"]     -= BET_COST
             user["predictions"] = user.get("predictions", 0) + 1
             db_set_user(uname, user)
-            db_set_ou_prediction(uname, match_id, prediction)
+            db_set_ou_prediction(uname, match_id, prediction, ou_line_val)
             json_resp(self, 200, {"message": "O/U prediction placed", "tokens": user["tokens"]})
 
         elif path == "/api/admin/result":
