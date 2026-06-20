@@ -581,11 +581,13 @@ function matchCardHTML(m){
 
   // ── Over/Under section ──────────────────────────────────────────────────
   let ouHtml = '';
-  if(m.ouLine != null){
-    const ouPred    = myOUPredictions[m.id];
-    const ouAdminRes= m.ouResult;                  // auto-derived from score
+  const ouPred    = myOUPredictions[m.id];
+  const ouAdminRes= m.ouResult;   // set by auto-award or admin
+  // Show O/U section if: line is available, OR result exists, OR user has a pick
+  if(m.ouLine != null || ouAdminRes || ouPred){
     const ouCorrect = ouPred && ouAdminRes && ouPred.prediction === ouAdminRes;
     const ouWrong   = ouPred && ouAdminRes && ouPred.prediction !== ouAdminRes;
+    const ouLine    = m.ouLine;   // may be null for finished matches
 
     let ouResultBadge = '';
     if(ouAdminRes){
@@ -600,26 +602,24 @@ function matchCardHTML(m){
         O/U: ${ouPred.prediction.toUpperCase()} ${ouCorrect?'✓ +300':'✗ -200'}
       </button>`;
     } else if(ouAdminRes && !ouPred){
-      // match done, no O/U prediction placed
-      ouBtns = `<span class="locked-tag" style="color:var(--muted)">No pick</span>`;
+      ouBtns = `<span class="locked-tag" style="color:var(--muted)">No O/U pick</span>`;
     } else if(ouPred && !ouAdminRes && (isLive || isDone)){
-      // match in progress or FT but O/U result not yet resolved
       const icon = isLive ? '🔴' : '⏳';
       ouBtns = `<button class="pred-btn selected" style="opacity:.7" disabled>
         ${icon} O/U: ${ouPred.prediction.toUpperCase()} — ${isLive?'live':'pending'}
       </button>`;
-    } else if(!effectiveLocked && token && !ouAdminRes){
+    } else if(!effectiveLocked && token && !ouAdminRes && ouLine != null){
       const sel = ouPred ? ouPred.prediction : null;
       ouBtns = `
         <button class="pred-btn${sel==='over'?' selected':''}" onclick="predictOU('${m.id}','over')">
-          OVER ${m.ouLine}
+          OVER ${ouLine}
         </button>
         <button class="pred-btn${sel==='under'?' selected':''}" onclick="predictOU('${m.id}','under')">
-          UNDER ${m.ouLine}
+          UNDER ${ouLine}
         </button>`;
     } else if(ouPred && !ouAdminRes){
       ouBtns = `<button class="pred-btn selected" disabled>🔒 O/U: ${ouPred.prediction.toUpperCase()}</button>`;
-    } else if(!token){
+    } else if(!token && ouLine != null){
       ouBtns = `<span class="locked-tag">Login for O/U</span>`;
     }
 
@@ -627,9 +627,10 @@ function matchCardHTML(m){
     const oddsInfo = (fmtOdds(m.overOdds) && fmtOdds(m.underOdds))
       ? `&nbsp;·&nbsp;<span style="color:var(--green)">Over ${fmtOdds(m.overOdds)}</span>&nbsp;/&nbsp;<span style="color:var(--red)">Under ${fmtOdds(m.underOdds)}</span>`
       : '';
+    const lineLabel = ouLine != null ? `O/U ${ouLine}` : 'O/U';
     ouHtml = `<div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px">
       <div style="font-size:.68rem;color:var(--muted);margin-bottom:5px;text-align:center">
-        O/U ${m.ouLine}${oddsInfo}
+        ${lineLabel}${oddsInfo}
         &nbsp;·&nbsp;<span style="color:var(--muted);font-size:.62rem">via ESPN</span>
       </div>
       ${ouResultBadge}
