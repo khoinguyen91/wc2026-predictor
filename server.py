@@ -618,22 +618,44 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         elif path == "/api/leaderboard":
             users = db_all_users()
+
+            # Build set of finished match IDs (statusState == "post")
+            matches      = fetch_espn() or []
+            overrides    = db_all_overrides()
+            ou_overrides = db_all_ou_overrides()
+            finished_ids = {
+                m["id"] for m in matches
+                if m["statusState"] == "post"
+                or overrides.get(m["id"], {}).get("result")
+            }
+
+            all_preds = db_all_predictions()
+            all_ou    = db_all_ou_predictions()
+
             board = []
             for u in users:
-                tokens      = u.get("tokens", 0)
-                predictions = u.get("predictions", 0)
-                correct     = u.get("correct", 0)
-                net_gain    = tokens - INITIAL_TOKENS   # positive = profit, negative = loss
+                tokens   = u.get("tokens", 0)
+                correct  = u.get("correct", 0)
+                net_gain = tokens - INITIAL_TOKENS
+
+                # Count predictions on finished matches only (for accuracy denominator)
+                uname     = u["username"]
+                fin_preds = sum(1 for mid in all_preds.get(uname, {}) if mid in finished_ids)
+                fin_ou    = sum(1 for mid in all_ou.get(uname, {})    if mid in finished_ids)
+                finished_count = fin_preds + fin_ou
+
+                # Total placed (for display)
+                total_placed = u.get("predictions", 0)
+
                 board.append({
-                    "username":    u["username"],
-                    "tokens":      tokens,
-                    "netGain":     net_gain,
-                    "correct":     correct,
-                    "predictions": predictions,
+                    "username":       uname,
+                    "tokens":         tokens,
+                    "netGain":        net_gain,
+                    "correct":        correct,
+                    "predictions":    total_placed,    # all bets placed
+                    "finishedBets":   finished_count,  # bets on finished matches (accuracy denominator)
                 })
-            # Sort by: net gain desc → correct desc → predictions desc
-            # Inactive accounts (0 predictions) all sit at net_gain=0 at the bottom
-            board.sort(key=lambda x: (-x["netGain"], -x["correct"], -x["predictions"]))
+            board.sort(key=lambda x: (-x["netGain"], -x["correct"], -x["finishedBets"]))
             json_resp(self, 200, board)
 
         elif path == "/api/me":

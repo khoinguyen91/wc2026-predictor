@@ -701,17 +701,21 @@ async function loadLeaderboard(){
   const rankIcon = i => i===0?'🥇':i===1?'🥈':i===2?'🥉':`${i+1}`;
 
   const makeRow = (u, i, dimmed=false) => {
-    const acc     = u.predictions>0 ? Math.round(u.correct/u.predictions*100)+'%' : '-';
-    const gain    = u.netGain >= 0
+    // Accuracy = correct / finished bets only (excludes pending/upcoming predictions)
+    const acc  = u.finishedBets > 0 ? Math.round(u.correct / u.finishedBets * 100) + '%' : '-';
+    const gain = u.netGain >= 0
       ? `<span style="color:var(--green)">+${u.netGain.toLocaleString()}</span>`
       : `<span style="color:var(--red)">${u.netGain.toLocaleString()}</span>`;
-    const isMe    = u.username === username;
+    const isMe = u.username === username;
+    // Correct/finished (accuracy denominator) | total placed (all bets)
+    const predCell = `${u.correct} / ${u.finishedBets}
+      <span style="color:var(--muted);font-size:.74rem">(${u.predictions} placed)</span>`;
     return `<tr class="${isMe?'me-row':''}" style="${dimmed?'opacity:.4':''}">
       <td style="font-weight:700">${dimmed ? '-' : rankIcon(i)}</td>
       <td><strong>${u.username}</strong>${isMe?' 👈':''}</td>
       <td>${gain} 🪙</td>
       <td style="color:var(--muted);font-size:.8rem">${u.tokens.toLocaleString()} total</td>
-      <td>${u.correct} / ${u.predictions}</td>
+      <td>${predCell}</td>
       <td>${acc}</td>
     </tr>`;
   };
@@ -727,7 +731,9 @@ async function loadLeaderboard(){
 
   el.innerHTML = `<table class="lb-table">
     <thead><tr>
-      <th>#</th><th>Player</th><th>Net Gain</th><th>Balance</th><th>Correct/Total</th><th>Accuracy</th>
+      <th>#</th><th>Player</th><th>Net Gain</th><th>Balance</th>
+      <th>Correct/Finished <span style="font-size:.7rem;font-weight:400">(total placed)</span></th>
+      <th>Accuracy</th>
     </tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
