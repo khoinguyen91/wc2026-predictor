@@ -895,6 +895,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 processed.append("{} vs {} → {}".format(m["home"], m["away"], ou_result))
             json_resp(self, 200, {"processed": processed, "skipped_count": len(skipped)})
 
+        elif path == "/api/admin/reset_password":
+            if not check_admin(body):
+                json_resp(self, 403, {"error": "Forbidden"}); return
+            username = body.get("username", "").strip()
+            new_pw   = body.get("new_password", "").strip()
+            if not username or not new_pw:
+                json_resp(self, 400, {"error": "username and new_password required"}); return
+            if len(new_pw) < 4:
+                json_resp(self, 400, {"error": "Password must be at least 4 characters"}); return
+            u = db_get_user(username)
+            if not u:
+                json_resp(self, 404, {"error": "User not found"}); return
+            u["password"] = hash_pw(new_pw)
+            db_set_user(username, u)
+            json_resp(self, 200, {"message": "Password reset for {}".format(username)})
+
         elif path == "/api/admin/lock":
             if not check_admin(body):
                 json_resp(self, 403, {"error": "Forbidden"}); return

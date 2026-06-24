@@ -94,6 +94,16 @@ tr:last-child td{border-bottom:none}
   <div class="card">
     <h2>👥 Players</h2>
     <div id="users-table-wrap"><em style="color:var(--muted)">Loading…</em></div>
+
+    <div style="margin-top:20px;border-top:1px solid var(--border);padding-top:16px">
+      <h3 style="margin-bottom:12px">🔑 Reset User Password</h3>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+        <div><label>Username</label><input id="reset-username" placeholder="Enter username" style="width:180px"/></div>
+        <div><label>New Password</label><input id="reset-pw" type="password" placeholder="New password" style="width:180px"/></div>
+        <button class="btn btn-danger" onclick="resetPassword()">Reset Password</button>
+      </div>
+      <div id="reset-msg"></div>
+    </div>
   </div>
 </div>
 
@@ -274,6 +284,25 @@ async function setResult(matchId, homeName, awayName){
     loadAll();
   } else {
     showMsg('result-msg', res.data.error||'Error',false);
+  }
+}
+
+async function resetPassword(){
+  const username = document.getElementById('reset-username').value.trim();
+  const newPw    = document.getElementById('reset-pw').value;
+  const msgEl    = document.getElementById('reset-msg');
+  if(!username || !newPw){ showMsg('reset-msg','Enter both username and new password',false); return; }
+  const res = await api('POST','/api/admin/reset_password',{
+    admin_password: adminPw, username, new_password: newPw
+  });
+  if(res.ok){
+    msgEl.className='msg msg-ok';
+    msgEl.textContent = '✓ Password reset for ' + username + '. Tell them their new password.';
+    document.getElementById('reset-username').value = '';
+    document.getElementById('reset-pw').value = '';
+  } else {
+    msgEl.className='msg msg-err';
+    msgEl.textContent = res.data.error || 'Error';
   }
 }
 
