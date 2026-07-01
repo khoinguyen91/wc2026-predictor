@@ -248,7 +248,8 @@ function renderMatchTable(){
     const ouDone = m.ouResult;
     const ouLine = m.ouLine ? `O/U ${m.ouLine}` : '';
     const ouCell = ouDone
-      ? `<span style="color:var(--green);font-size:.76rem">✓ ${ouDone.toUpperCase()}</span>`
+      ? `<span style="color:var(--green);font-size:.76rem">✓ ${ouDone.toUpperCase()}</span>
+         <button class="btn btn-sm btn-danger" style="margin-left:5px;font-size:.65rem" onclick="clearOUResult('${m.id}','${m.home}','${m.away}')">Clear</button>`
       : (m.statusState==='post'
           ? `<select id="ou-${m.id}" style="width:auto;padding:3px 7px;font-size:.78rem">
                <option value="">-- ${ouLine||'pick'} --</option>
@@ -331,6 +332,17 @@ async function setOUResult(matchId){
   const res = await api('POST','/api/admin/ou_result',{admin_password:adminPw, match_id:matchId, result});
   if(res.ok){
     showMsg('result-msg',`✓ O/U result set! ${res.data.winner_count} winner(s) awarded 500 tokens.`,true);
+    loadAll();
+  } else {
+    showMsg('result-msg', res.data.error||'Error', false);
+  }
+}
+
+async function clearOUResult(matchId, home, away){
+  if(!confirm(`Clear O/U result for ${home} vs ${away}? This reverts tokens for winners.`)) return;
+  const res = await api('POST','/api/admin/clear_ou_result',{admin_password:adminPw, match_id:matchId});
+  if(res.ok){
+    showMsg('result-msg',`✓ O/U cleared (was ${res.data.old_result}). Reverted ${res.data.reverted_users.length} user(s). Now reprocess to re-judge.`,true);
     loadAll();
   } else {
     showMsg('result-msg', res.data.error||'Error', false);

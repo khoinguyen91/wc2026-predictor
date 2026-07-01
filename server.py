@@ -461,20 +461,15 @@ def _auto_award(matches):
             try:
                 ou_ov = db_get_ou_override(m["id"])
                 if not ou_ov.get("result"):
-                    # ESPN removes ouLine after match ends — fall back to stored line in predictions
-                    ou_line_live = m.get("ouLine")
-                    ou_result = m.get("ouResult")  # derived when ouLine was still available
-
-                    # If ouResult not computed (ESPN dropped ouLine after FT), use stored line
-                    if not ou_result and m["statusState"] == "post":
+                    ou_result = None
+                    if m["statusState"] == "post":
                         home_s = m.get("homeScore", "")
                         away_s = m.get("awayScore", "")
                         if home_s != "" and away_s != "":
                             try:
                                 total = int(home_s) + int(away_s)
-                                # 1st choice: ouLine stored in override record (most reliable)
+                                # Use pre-match stored line — ESPN may shift it in-play
                                 stored_line = ou_ov.get("ouLine")
-                                # 2nd choice: ouLine stored in any user's prediction
                                 if not stored_line:
                                     for uname, picks in all_ou.items():
                                         p = picks.get(m["id"])
@@ -483,6 +478,9 @@ def _auto_award(matches):
                                             break
                                 if stored_line:
                                     stored_line = float(stored_line)
+                                elif m.get("ouLine") is not None:
+                                    stored_line = float(m["ouLine"])
+                                if stored_line:
                                     if total > stored_line:   ou_result = "over"
                                     elif total < stored_line: ou_result = "under"
                             except (ValueError, TypeError):
@@ -490,7 +488,10 @@ def _auto_award(matches):
 
                     if ou_result:
                         print("[AUTO] O/U result {} for {} vs {}".format(ou_result, m["home"], m["away"]))
-                        db_set_ou_override(m["id"], {"result": ou_result, "locked": True, "auto": True})
+                        override_data = {"result": ou_result, "locked": True, "auto": True}
+                        if stored_line:
+                            override_data["ouLine"] = stored_line
+                        db_set_ou_override(m["id"], override_data)
                         for uname, picks in all_ou.items():
                             p = picks.get(m["id"])
                             if p and p.get("prediction") == ou_result:
@@ -611,8 +612,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 entry = dict(m)
                 entry["locked"]      = ov.get("locked", False) or m["statusState"] in ("in", "post")
                 entry["adminResult"] = ov.get("result")
-                # Use stored O/U result (from override) as fallback when ESPN drops the line
-                entry["ouResult"]    = m.get("ouResult") or ou_ov.get("result")
+                # Prefer stored O/U result — ESPN may shift the line in-play
+                entry["ouResult"]    = ou_ov.get("result") or m.get("ouResult")
                 result.append(entry)
             json_resp(self, 200, result)
 
@@ -849,6 +850,32 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         winners.append(uname)
             json_resp(self, 200, {"message": "O/U result set", "winners": winners,
                                    "winner_count": len(winners)})
+
+        elif path == "/api/admin/clear_ou_result":
+            if not check_admin(body):
+                json_resp(self, 403, {"error": "Forbidden"}); return
+            match_id = str(body.get("match_id", "")).strip()
+            if not match_id:
+                json_resp(self, 400, {"error": "match_id required"}); return
+            ou_ov = db_get_ou_override(match_id)
+            old_result = ou_ov.get("result")
+            if not old_result:
+                json_resp(self, 400, {"error": "No O/U result to clear"}); return
+            all_ou = db_all_ou_predictions()
+            reverted = []
+            for uname, picks in all_ou.items():
+                p = picks.get(match_id)
+                if p and p.get("prediction") == old_result:
+                    u = db_get_user(uname)
+                    if u:
+                        u["tokens"]  = u.get("tokens", 0) - WIN_REWARD
+                        u["correct"] = max(u.get("correct", 0) - 1, 0)
+                        db_set_user(uname, u)
+                        reverted.append(uname)
+            kept = {k: v for k, v in ou_ov.items() if k in ("ouLine",)}
+            db_set_ou_override(match_id, kept)
+            json_resp(self, 200, {"message": "O/U result cleared", "old_result": old_result,
+                                   "reverted_users": reverted})
 
         elif path == "/api/admin/reprocess_ou":
             # Reprocess ALL finished matches using stored ouLine from override or predictions
