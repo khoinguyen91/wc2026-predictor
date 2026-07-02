@@ -520,11 +520,12 @@ function matchCardHTML(m){
   // Score (shown when live or done)
   let scoreHtml = '';
   if(isLive || isDone){
+    const ftNote = m.fullTimeScore ? `<div style="font-size:.6rem;color:var(--muted);margin-top:2px">FT ${m.fullTimeScore} (AET)</div>` : '';
     scoreHtml = `<div class="score-box">
       <span class="score-num" style="${isLive?'color:var(--live)':''}">${m.homeScore||0}</span>
       <span class="score-sep">-</span>
       <span class="score-num" style="${isLive?'color:var(--live)':''}">${m.awayScore||0}</span>
-    </div>`;
+    </div>${ftNote}`;
   } else {
     scoreHtml = `<div class="match-vs">VS</div>`;
   }

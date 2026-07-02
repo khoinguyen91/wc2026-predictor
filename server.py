@@ -56,6 +56,8 @@ STAGE_LABELS = {
     "3rd-place-match": "3rd Place Match",
     "final":           "Final",
 }
+KNOCKOUT_STAGES = {"round-of-32", "round-of-16", "quarterfinals", "semifinals",
+                   "3rd-place-match", "final"}
 
 # ── Storage layer (MongoDB or JSON fallback) ──────────────────────────────────
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -365,9 +367,38 @@ def fetch_espn():
 
             home_score = home_c.get("score", "")
             away_score = away_c.get("score", "")
+
+            # For knockout matches, compute 90-min regulation score from goal details
+            home_score_reg = home_score
+            away_score_reg = away_score
+            is_knockout = slug in KNOCKOUT_STAGES
+            went_to_et  = False
+            if is_knockout and state == "post":
+                status_name = status.get("name", "")
+                went_to_et = "AET" in status_name or "PEN" in status_name
+                if went_to_et:
+                    home_id = str(home_t.get("id", ""))
+                    h_reg, a_reg = 0, 0
+                    for detail in comp.get("details", []):
+                        if not detail.get("scoringPlay"):
+                            continue
+                        if detail.get("shootout"):
+                            continue
+                        clock_val = detail.get("clock", {}).get("value", 0)
+                        if clock_val > 5400:
+                            continue
+                        team_id = str(detail.get("team", {}).get("id", ""))
+                        is_own_goal = detail.get("ownGoal", False)
+                        if (team_id == home_id) != is_own_goal:
+                            h_reg += 1
+                        else:
+                            a_reg += 1
+                    home_score_reg = str(h_reg)
+                    away_score_reg = str(a_reg)
+
             espn_result = None
-            if state == "post" and home_score != "" and away_score != "":
-                espn_result = _score_to_result(home_score, away_score)
+            if state == "post" and home_score_reg != "" and away_score_reg != "":
+                espn_result = _score_to_result(home_score_reg, away_score_reg)
 
             # O/U odds — ESPN returns odds as a list; first item may be None
             odds_raw   = comp.get("odds") or []
@@ -379,13 +410,12 @@ def fetch_espn():
 
             # For finished matches derive O/U result from final score
             ou_result = None
-            if state == "post" and home_score != "" and away_score != "":
+            if state == "post" and home_score_reg != "" and away_score_reg != "":
                 try:
-                    total = int(home_score) + int(away_score)
+                    total = int(home_score_reg) + int(away_score_reg)
                     if ou_line is not None:
                         if total > ou_line:   ou_result = "over"
                         elif total < ou_line: ou_result = "under"
-                        # exact line = push (no result, no award)
                 except (ValueError, TypeError):
                     pass
 
@@ -397,8 +427,9 @@ def fetch_espn():
                 "awayAbbr":    away_t.get("abbreviation", ""),
                 "homeLogo":    home_t.get("logo", ""),
                 "awayLogo":    away_t.get("logo", ""),
-                "homeScore":   home_score,
-                "awayScore":   away_score,
+                "homeScore":   home_score_reg,
+                "awayScore":   away_score_reg,
+                "fullTimeScore": "{}-{}".format(home_score, away_score) if went_to_et else None,
                 "time":        event.get("date", ""),
                 "stage":       slug,
                 "stageLabel":  STAGE_LABELS.get(slug, slug.replace("-", " ").title()),
