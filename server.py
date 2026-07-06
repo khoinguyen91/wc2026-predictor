@@ -387,14 +387,18 @@ def fetch_espn():
                         clock_val = detail.get("clock", {}).get("value", 0)
                         if clock_val > 5400:
                             continue
+                        # ESPN's "team" on a scoring play is always the beneficiary,
+                        # including own goals — no need to flip for ownGoal.
                         team_id = str(detail.get("team", {}).get("id", ""))
-                        is_own_goal = detail.get("ownGoal", False)
-                        if (team_id == home_id) != is_own_goal:
+                        if team_id == home_id:
                             h_reg += 1
                         else:
                             a_reg += 1
                     home_score_reg = str(h_reg)
                     away_score_reg = str(a_reg)
+
+            home_shootout = home_c.get("shootoutScore")
+            away_shootout = away_c.get("shootoutScore")
 
             espn_result = None
             if state == "post" and home_score_reg != "" and away_score_reg != "":
@@ -430,6 +434,8 @@ def fetch_espn():
                 "homeScore":   home_score_reg,
                 "awayScore":   away_score_reg,
                 "fullTimeScore": "{}-{}".format(home_score, away_score) if went_to_et else None,
+                "homeShootout": home_shootout if went_to_et else None,
+                "awayShootout": away_shootout if went_to_et else None,
                 "time":        event.get("date", ""),
                 "stage":       slug,
                 "stageLabel":  STAGE_LABELS.get(slug, slug.replace("-", " ").title()),
@@ -855,6 +861,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         winners.append(uname)
             json_resp(self, 200, {"message": "Result set", "winners": winners,
                                    "winner_count": len(winners)})
+
+        elif path == "/api/admin/clear_result":
+            if not check_admin(body):
+                json_resp(self, 403, {"error": "Forbidden"}); return
+            match_id = str(body.get("match_id", "")).strip()
+            if not match_id:
+                json_resp(self, 400, {"error": "match_id required"}); return
+            ov = db_get_override(match_id)
+            old_result = ov.get("result")
+            if not old_result:
+                json_resp(self, 400, {"error": "No result to clear"}); return
+            all_preds = db_all_predictions()
+            reverted = []
+            for uname, picks in all_preds.items():
+                p = picks.get(match_id)
+                if p and p.get("prediction") == old_result:
+                    u = db_get_user(uname)
+                    if u:
+                        u["tokens"]  = u.get("tokens", 0) - WIN_REWARD
+                        u["correct"] = max(u.get("correct", 0) - 1, 0)
+                        db_set_user(uname, u)
+                        reverted.append(uname)
+            db_set_override(match_id, {})
+            json_resp(self, 200, {"message": "Result cleared", "old_result": old_result,
+                                   "reverted_users": reverted})
 
         elif path == "/api/admin/ou_result":
             # Manually award O/U when auto-award couldn't resolve the line

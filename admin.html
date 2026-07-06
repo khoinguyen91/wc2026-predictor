@@ -229,7 +229,8 @@ function renderMatchTable(){
       : `<span style="color:var(--muted)">–</span>`;
 
     const resultCell = m.adminResult
-      ? `<span style="color:var(--muted);font-size:.76rem">Done ✓</span>`
+      ? `<span style="color:var(--muted);font-size:.76rem">Done ✓</span>
+         <button class="btn btn-sm btn-danger" style="margin-left:5px;font-size:.65rem" onclick="clearResult('${m.id}','${m.home}','${m.away}')">Clear</button>`
       : `<select id="res-${m.id}" style="width:auto;padding:3px 7px;font-size:.78rem">
            <option value="">-- pick --</option>
            <option value="home">🏠 ${m.home} Win</option>
@@ -285,6 +286,17 @@ async function setResult(matchId, homeName, awayName){
     loadAll();
   } else {
     showMsg('result-msg', res.data.error||'Error',false);
+  }
+}
+
+async function clearResult(matchId, home, away){
+  if(!confirm(`Clear result for ${home} vs ${away}? This reverts tokens for winners.`)) return;
+  const res = await api('POST','/api/admin/clear_result',{admin_password:adminPw, match_id:matchId});
+  if(res.ok){
+    showMsg('result-msg',`✓ Result cleared (was ${res.data.old_result}). Reverted ${res.data.reverted_users.length} user(s). Now set the correct result.`,true);
+    loadAll();
+  } else {
+    showMsg('result-msg', res.data.error||'Error', false);
   }
 }
 
