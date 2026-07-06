@@ -453,12 +453,8 @@ function setStage(s){
   renderMatches();
 }
 
-function renderMatches(){
-  const list = activeStage==='all' ? allMatches : allMatches.filter(m=>m.stage===activeStage);
-  const container = document.getElementById('matches-container');
-  if(!list.length){ container.innerHTML='<div class="empty">No matches.</div>'; return; }
-
-  // Group by stageLabel then by date
+function groupedMatchesHTML(list){
+  // Group by stageLabel then by date, preserving the order matches were passed in
   const sections = {};
   list.forEach(m=>{
     const day = new Date(m.time).toLocaleDateString('en-GB',{timeZone:'Asia/Bangkok',weekday:'long',month:'long',day:'numeric'});
@@ -475,6 +471,38 @@ function renderMatches(){
     matches.forEach(m => { try{ html += matchCardHTML(m); } catch(e){ console.error('Card error',m.id,e); } });
     html += '</div>';
   }
+  return html;
+}
+
+function renderMatches(){
+  const list = activeStage==='all' ? allMatches : allMatches.filter(m=>m.stage===activeStage);
+  const container = document.getElementById('matches-container');
+  if(!list.length){ container.innerHTML='<div class="empty">No matches.</div>'; return; }
+
+  const finished = list.filter(m => m.statusState === 'post')
+                       .sort((a,b) => new Date(b.time) - new Date(a.time));   // most recent first
+  const upcoming = list.filter(m => m.statusState !== 'post')
+                       .sort((a,b) => new Date(a.time) - new Date(b.time));   // soonest first
+
+  const latestResults = finished.slice(0, 2);
+  const olderResults  = finished.slice(2);
+
+  let html = '';
+
+  if(latestResults.length){
+    html += `<div class="section-label">⚡ Latest Results</div>`;
+    html += '<div class="match-grid">';
+    latestResults.forEach(m => { try{ html += matchCardHTML(m); } catch(e){ console.error('Card error',m.id,e); } });
+    html += '</div>';
+  }
+
+  html += groupedMatchesHTML(upcoming);
+
+  if(olderResults.length){
+    html += `<div class="section-label" style="margin-top:28px">🏁 Completed Matches</div>`;
+    html += groupedMatchesHTML(olderResults);
+  }
+
   container.innerHTML = html;
 }
 
