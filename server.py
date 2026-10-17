@@ -449,10 +449,61 @@ RIOT_TTL    = 300
 RIOT_PAGES  = 12                                                       # max pages walked each way
 _riot = {"data": None, "ts": 0, "next_try": 0}
 
-def _https(url):
-    """Riot returns http:// image links; the site is https, so browsers block them as mixed content."""
+_LOGO_HOST = "static.lolesports.com"
+_LOGO_URL  = re.compile(r"^https?://" + re.escape(_LOGO_HOST) + r"/teams/([A-Za-z0-9._\-]{1,200}\.(?:png|jpg|jpeg|webp|gif|svg))$", re.I)
+_LOGO_NAME = re.compile(r"^[A-Za-z0-9._\-]{1,200}\.(?:png|jpg|jpeg|webp|gif|svg)$", re.I)
+_LOGO_MAX  = 2 * 1024 * 1024
+_logo_cache = {}                     # filename -> (expires_at, content_type, bytes) or (expires_at, None, None)
+_logo_lock  = threading.Lock()
+
+def _logo_url(url):
+    """Point team logos at our own /logo/<file> route.
+
+    Riot's image host serves http:// links (blocked as mixed content on the https site) and
+    can be unreachable from some networks, so the server fetches and caches the images.
+    URLs that are not on the expected host are upgraded to https and passed through.
+    """
     url = url or ""
+    m = _LOGO_URL.match(url)
+    if m:
+        return "/logo/" + m.group(1)
     return "https://" + url[len("http://"):] if url.startswith("http://") else url
+
+def _fetch_logo_upstream(name):
+    """Return (content_type, bytes) for a logo from Riot's image host, or None."""
+    if not _HAS_REQUESTS:
+        return None
+    try:
+        r = _requests.get("https://{}/teams/{}".format(_LOGO_HOST, name),
+                          headers={"User-Agent": LP_UA}, timeout=15, stream=True)
+        ctype = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if r.status_code != 200 or not ctype.startswith("image/"):
+            print("[LOGO] upstream {} for {} ({})".format(r.status_code, name, ctype or "no type"))
+            return None
+        data = r.raw.read(_LOGO_MAX + 1, decode_content=True)
+        if len(data) > _LOGO_MAX:
+            print("[LOGO] {} too large".format(name))
+            return None
+        return ctype, data
+    except Exception as e:
+        print("[LOGO] fetch error:", type(e).__name__)
+        return None
+
+def get_logo(name):
+    """Cached logo lookup. Returns (content_type, bytes) or None. Successes are kept 24 h, failures 5 min."""
+    if not _LOGO_NAME.match(name):
+        return None
+    now = time.time()
+    with _logo_lock:
+        hit = _logo_cache.get(name)
+        if hit and hit[0] > now:
+            return (hit[1], hit[2]) if hit[1] else None
+    got = _fetch_logo_upstream(name)
+    with _logo_lock:
+        if len(_logo_cache) >= 300:
+            _logo_cache.clear()
+        _logo_cache[name] = (now + (86400 if got else 300),) + (got if got else (None, None))
+    return got
 
 def _riot_events_to_matches(events):
     """Convert getSchedule events to the raw match dicts _normalise_match expects."""
@@ -474,7 +525,7 @@ def _riot_events_to_matches(events):
                 "id":          str(match["id"]),
                 "home":        t1.get("name") or "TBD",   "away":      t2.get("name") or "TBD",
                 "homeAbbr":    t1.get("code") or "",      "awayAbbr":  t2.get("code") or "",
-                "homeLogo":    _https(t1.get("image")),   "awayLogo":  _https(t2.get("image")),
+                "homeLogo":    _logo_url(t1.get("image")), "awayLogo": _logo_url(t2.get("image")),
                 "homeScore":   r1.get("gameWins", ""),    "awayScore": r2.get("gameWins", ""),
                 "time":        start,
                 "stage":       _lp_stage({"Tab": ev.get("blockName") or ""}),
@@ -707,6 +758,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._serve_file("index.html", "text/html; charset=utf-8")
         elif path == "/admin":
             self._serve_file("admin.html", "text/html; charset=utf-8")
+        elif path.startswith("/logo/"):
+            got = get_logo(path[len("/logo/"):])
+            if not got:
+                self.send_response(404); self.send_header("Content-Length", "0"); self.end_headers(); return
+            ctype, data = got
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", len(data))
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            if ctype == "image/svg+xml":
+                self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
+            self.end_headers()
+            self.wfile.write(data)
         elif path.startswith("/api"):
             self._get(path)
         else:
