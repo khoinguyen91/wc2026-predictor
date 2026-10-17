@@ -469,6 +469,16 @@ def _logo_url(url):
         return "/logo/" + m.group(1)
     return "https://" + url[len("http://"):] if url.startswith("http://") else url
 
+_LOGO_GENERIC_TYPES = ("binary/octet-stream", "application/octet-stream", "application/x-binary", "")
+
+def _sniff_image(data):
+    """Identify raster images by signature. SVG is deliberately not sniffed (it can carry script)."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n":                    return "image/png"
+    if data[:3] == b"\xff\xd8\xff":                         return "image/jpeg"
+    if data[:6] in (b"GIF87a", b"GIF89a"):                  return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":       return "image/webp"
+    return None
+
 _logo_err = {}                       # filename -> short reason for the last failure (shown in X-Logo-Error)
 
 def _logo_fail(name, reason):
@@ -485,7 +495,9 @@ def _fetch_logo_upstream(name):
         r = _requests.get("https://{}/teams/{}".format(_LOGO_HOST, name),
                           headers={"User-Agent": LP_UA}, timeout=(8, 10), stream=True)
         ctype = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-        if r.status_code != 200 or not ctype.startswith("image/"):
+        # Riot's host labels some valid images binary/octet-stream, so those are accepted
+        # here and identified by their first bytes below.
+        if r.status_code != 200 or not (ctype.startswith("image/") or ctype in _LOGO_GENERIC_TYPES):
             return _logo_fail(name, "upstream {} {}".format(r.status_code, ctype or "no type"))
         declared = r.headers.get("Content-Length", "")
         if declared.isdigit() and int(declared) > _LOGO_MAX:
@@ -497,8 +509,13 @@ def _fetch_logo_upstream(name):
                 return _logo_fail(name, "too large (over {} bytes)".format(_LOGO_MAX))
             if time.time() > deadline:
                 return _logo_fail(name, "timed out after {} bytes".format(len(buf)))
+        data = bytes(buf)
+        if not ctype.startswith("image/"):
+            ctype = _sniff_image(data)
+            if not ctype:
+                return _logo_fail(name, "not a recognised image ({} bytes)".format(len(data)))
         _logo_err.pop(name, None)
-        return ctype, bytes(buf)
+        return ctype, data
     except Exception as e:
         return _logo_fail(name, "fetch error {}".format(type(e).__name__))
     finally:
