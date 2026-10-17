@@ -254,8 +254,8 @@ function renderMatchTable(){
       ? `<button class="btn btn-sm btn-blue" onclick="toggleLock('${esc(m.id)}',false)">Unlock</button>`
       : `<button class="btn btn-sm btn-danger" onclick="toggleLock('${esc(m.id)}',true)">Lock</button>`;
 
-    const homeLogo = m.homeLogo ? `<img class="team-logo" src="${esc(m.homeLogo)}" alt="">` : '';
-    const awayLogo = m.awayLogo ? `<img class="team-logo" src="${esc(m.awayLogo)}" alt="">` : '';
+    const homeLogo = m.homeLogo ? `<img class="team-logo" src="${esc(m.homeLogo)}" alt="" referrerpolicy="no-referrer">` : '';
+    const awayLogo = m.awayLogo ? `<img class="team-logo" src="${esc(m.awayLogo)}" alt="" referrerpolicy="no-referrer">` : '';
 
     html+=`<tr>
       <td>${homeLogo}${esc(m.home)} <span style="color:var(--muted)">vs</span> ${esc(m.away)}${awayLogo}</td>

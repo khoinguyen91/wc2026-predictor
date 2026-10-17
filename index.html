@@ -488,7 +488,7 @@ function teamHTML(m, side){
   const cls   = side==='home' ? 'left' : 'right';
   const fb    = `<span class="team-logo-fallback">${esc(abbr)}</span>`;
   const imgEl = logo
-    ? `<img class="team-logo" src="${esc(logo)}" alt="${esc(name)}" onerror="this.style.display='none';this.nextElementSibling.style.display=''">
+    ? `<img class="team-logo" src="${esc(logo)}" alt="${esc(name)}" referrerpolicy="no-referrer" onerror="this.style.display='none';this.nextElementSibling.style.display=''">
        ${fb.replace('class="team-logo-fallback"', 'class="team-logo-fallback" style="display:none"')}`
     : fb;
   return `<div class="team ${cls}">${imgEl}<div class="team-name">${esc(name)}</div></div>`;

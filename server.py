@@ -449,6 +449,11 @@ RIOT_TTL    = 300
 RIOT_PAGES  = 12                                                       # max pages walked each way
 _riot = {"data": None, "ts": 0, "next_try": 0}
 
+def _https(url):
+    """Riot returns http:// image links; the site is https, so browsers block them as mixed content."""
+    url = url or ""
+    return "https://" + url[len("http://"):] if url.startswith("http://") else url
+
 def _riot_events_to_matches(events):
     """Convert getSchedule events to the raw match dicts _normalise_match expects."""
     out = []
@@ -469,7 +474,7 @@ def _riot_events_to_matches(events):
                 "id":          str(match["id"]),
                 "home":        t1.get("name") or "TBD",   "away":      t2.get("name") or "TBD",
                 "homeAbbr":    t1.get("code") or "",      "awayAbbr":  t2.get("code") or "",
-                "homeLogo":    t1.get("image") or "",     "awayLogo":  t2.get("image") or "",
+                "homeLogo":    _https(t1.get("image")),   "awayLogo":  _https(t2.get("image")),
                 "homeScore":   r1.get("gameWins", ""),    "awayScore": r2.get("gameWins", ""),
                 "time":        start,
                 "stage":       _lp_stage({"Tab": ev.get("blockName") or ""}),
