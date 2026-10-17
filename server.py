@@ -452,7 +452,7 @@ _riot = {"data": None, "ts": 0, "next_try": 0}
 _LOGO_HOST = "static.lolesports.com"
 _LOGO_URL  = re.compile(r"^https?://" + re.escape(_LOGO_HOST) + r"/teams/([A-Za-z0-9._\-]{1,200}\.(?:png|jpg|jpeg|webp|gif|svg))$", re.I)
 _LOGO_NAME = re.compile(r"^[A-Za-z0-9._\-]{1,200}\.(?:png|jpg|jpeg|webp|gif|svg)$", re.I)
-_LOGO_MAX  = 2 * 1024 * 1024
+_LOGO_MAX  = 6 * 1024 * 1024
 _logo_cache = {}                     # filename -> (expires_at, content_type, bytes) or (expires_at, None, None)
 _logo_lock  = threading.Lock()
 
@@ -469,25 +469,41 @@ def _logo_url(url):
         return "/logo/" + m.group(1)
     return "https://" + url[len("http://"):] if url.startswith("http://") else url
 
+_logo_err = {}                       # filename -> short reason for the last failure (shown in X-Logo-Error)
+
+def _logo_fail(name, reason):
+    print("[LOGO] {}: {}".format(name, reason))
+    _logo_err[name] = reason
+    return None
+
 def _fetch_logo_upstream(name):
-    """Return (content_type, bytes) for a logo from Riot's image host, or None."""
+    """Return (content_type, bytes) for a logo from Riot's image host, or None (reason in _logo_err)."""
     if not _HAS_REQUESTS:
-        return None
+        return _logo_fail(name, "requests unavailable")
+    r = None
     try:
         r = _requests.get("https://{}/teams/{}".format(_LOGO_HOST, name),
-                          headers={"User-Agent": LP_UA}, timeout=15, stream=True)
+                          headers={"User-Agent": LP_UA}, timeout=(8, 10), stream=True)
         ctype = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         if r.status_code != 200 or not ctype.startswith("image/"):
-            print("[LOGO] upstream {} for {} ({})".format(r.status_code, name, ctype or "no type"))
-            return None
-        data = r.raw.read(_LOGO_MAX + 1, decode_content=True)
-        if len(data) > _LOGO_MAX:
-            print("[LOGO] {} too large".format(name))
-            return None
-        return ctype, data
+            return _logo_fail(name, "upstream {} {}".format(r.status_code, ctype or "no type"))
+        declared = r.headers.get("Content-Length", "")
+        if declared.isdigit() and int(declared) > _LOGO_MAX:
+            return _logo_fail(name, "too large ({} bytes)".format(declared))
+        deadline, buf = time.time() + 25, bytearray()      # total budget, not just per-read
+        for chunk in r.iter_content(65536):
+            buf.extend(chunk)
+            if len(buf) > _LOGO_MAX:
+                return _logo_fail(name, "too large (over {} bytes)".format(_LOGO_MAX))
+            if time.time() > deadline:
+                return _logo_fail(name, "timed out after {} bytes".format(len(buf)))
+        _logo_err.pop(name, None)
+        return ctype, bytes(buf)
     except Exception as e:
-        print("[LOGO] fetch error:", type(e).__name__)
-        return None
+        return _logo_fail(name, "fetch error {}".format(type(e).__name__))
+    finally:
+        if r is not None:
+            r.close()
 
 def get_logo(name):
     """Cached logo lookup. Returns (content_type, bytes) or None. Successes are kept 24 h, failures 5 min."""
@@ -761,7 +777,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path.startswith("/logo/"):
             got = get_logo(path[len("/logo/"):])
             if not got:
-                self.send_response(404); self.send_header("Content-Length", "0"); self.end_headers(); return
+                why = re.sub(r"[^\x20-\x7e]", "", _logo_err.get(path[len("/logo/"):], "unknown"))[:100]
+                self.send_response(404)
+                self.send_header("X-Logo-Error", why)       # reason is visible without server logs
+                self.send_header("Content-Length", "0"); self.end_headers(); return
             ctype, data = got
             self.send_response(200)
             self.send_header("Content-Type", ctype)
