@@ -436,6 +436,98 @@ def _provider_remote():
     _lp["data"], _lp["ts"], _lp["last_error"] = matches, now, ""
     return matches
 
+# ── Riot LoL Esports provider (esports-api.lolesports.com) ────────────────────
+# The API lolesports.com itself uses. Undocumented; the x-api-key below is the
+# public key shipped in the lolesports.com web client (not a secret). Written from
+# the known response format and NOT yet verified against a live response — it is
+# blocked on the Bosch proxy, so it only runs where requests works (Render).
+RIOT_API    = "https://esports-api.lolesports.com/persisted/gw/getSchedule"
+RIOT_KEY    = os.environ.get("RIOT_API_KEY", "0TvQnueqKa5mxJntVWt0w4LpLfEkrV1Ta8rQBb9Z")
+RIOT_LEAGUE = os.environ.get("RIOT_LEAGUE_ID", "98767975604431411")   # "Worlds"
+RIOT_FROM   = os.environ.get("RIOT_FROM", "2026-09-01")               # ignore older seasons
+RIOT_TTL    = 300
+RIOT_PAGES  = 12                                                       # max pages walked each way
+_riot = {"data": None, "ts": 0, "next_try": 0}
+
+def _riot_events_to_matches(events):
+    """Convert getSchedule events to the raw match dicts _normalise_match expects."""
+    out = []
+    for ev in events:
+        try:
+            if ev.get("type") != "match":
+                continue
+            match = ev.get("match") or {}
+            teams = match.get("teams") or []
+            start = str(ev.get("startTime") or "")
+            if len(teams) != 2 or not match.get("id") or start[:10] < RIOT_FROM:
+                continue
+            t1, t2 = teams
+            state = {"completed": "post", "inProgress": "in"}.get(ev.get("state"), "pre")
+            r1, r2 = (t1.get("result") or {}), (t2.get("result") or {})
+            winner = "home" if r1.get("outcome") == "win" else "away" if r2.get("outcome") == "win" else None
+            out.append({
+                "id":          str(match["id"]),
+                "home":        t1.get("name") or "TBD",   "away":      t2.get("name") or "TBD",
+                "homeAbbr":    t1.get("code") or "",      "awayAbbr":  t2.get("code") or "",
+                "homeLogo":    t1.get("image") or "",     "awayLogo":  t2.get("image") or "",
+                "homeScore":   r1.get("gameWins", ""),    "awayScore": r2.get("gameWins", ""),
+                "time":        start,
+                "stage":       _lp_stage({"Tab": ev.get("blockName") or ""}),
+                "bestOf":      (match.get("strategy") or {}).get("count"),
+                "winner":      winner if state == "post" else None,
+                "statusState": state,
+            })
+        except (AttributeError, TypeError, KeyError):
+            continue
+    return out
+
+def _riot_get(token=None):
+    params = {"hl": "en-US", "leagueId": RIOT_LEAGUE}
+    if token:
+        params["pageToken"] = token
+    r = _requests.get(RIOT_API, params=params, headers={"x-api-key": RIOT_KEY, "User-Agent": LP_UA}, timeout=20)
+    r.raise_for_status()
+    return (r.json().get("data") or {}).get("schedule") or {}
+
+def _provider_riot():
+    """Worlds schedule/results from the Riot LoL Esports API (cached, backs off on failure)."""
+    now = time.time()
+    if _riot["data"] is not None and now - _riot["ts"] < RIOT_TTL:
+        return _riot["data"]
+    if now < _riot["next_try"]:
+        return _riot["data"]
+    if not (_HAS_REQUESTS and not IS_WIN):
+        return None                                # local Windows: proxy blocks it, skip quietly
+    try:
+        first = _riot_get()
+        events = list(first.get("events") or [])
+        pages  = first.get("pages") or {}
+        for direction in ("newer", "older"):       # the API returns a window around "now"
+            token, cur = pages.get(direction), first
+            for _ in range(RIOT_PAGES):
+                if not token:
+                    break
+                cur = _riot_get(token)
+                batch = cur.get("events") or []
+                events.extend(batch)
+                token = (cur.get("pages") or {}).get(direction)
+                if direction == "older" and batch and min(str(e.get("startTime", "")) for e in batch)[:10] < RIOT_FROM:
+                    break
+        matches = _riot_events_to_matches(events)
+        if not matches:
+            raise ValueError("no matches since {} for league {}".format(RIOT_FROM, RIOT_LEAGUE))
+        seen = {}
+        for m in matches:
+            seen[m["id"]] = m                      # de-dupe overlapping pages
+        _riot["data"], _riot["ts"] = list(seen.values()), now
+        _lp["last_error"] = ""
+        return _riot["data"]
+    except Exception as e:
+        print("[RIOT] fetch failed:", type(e).__name__, str(e)[:120])
+        _riot["next_try"] = now + 120
+        _lp["riot_error"] = "{}: {}".format(type(e).__name__, str(e)[:80])
+        return _riot["data"]
+
 def _provider_local_file():
     """Dev/test feed: data/matches.json holds a list of match dicts."""
     data = _jload("matches", None)
@@ -488,7 +580,9 @@ def fetch_matches():
         if _match_cache["data"] and now - _match_cache["ts"] < 120:
             return _match_cache["data"]
 
-        raw = _provider_remote()
+        raw = _provider_riot()
+        if raw is None:
+            raw = _provider_remote()
         if raw is None:
             raw = _provider_local_file()
         if raw is None:
@@ -637,8 +731,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/api/matches":
             matches = fetch_matches()
             if matches is None:
-                why = _lp["last_error"] or "feed not fetched yet"
-                json_resp(self, 502, {"error": "No Worlds 2026 match data available yet. (Leaguepedia: {})".format(why)}); return
+                why = "Riot: {}; Leaguepedia: {}".format(_lp.get("riot_error") or "not fetched yet",
+                                                         _lp["last_error"] or "not fetched yet")
+                json_resp(self, 502, {"error": "No Worlds 2026 match data available yet. ({})".format(why)}); return
             overrides = db_all_overrides()
             result = []
             for m in matches:
