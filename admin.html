@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Admin – WC2026 Predictor</title>
+<title>Admin – Worlds 2026 Predictor</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{--bg:#0a0e1a;--surface:#131929;--card:#1a2238;--accent:#f4b942;
@@ -58,7 +58,7 @@ tr:last-child td{border-bottom:none}
 </head>
 <body>
 <nav>
-  <div class="nav-brand">🔐 WC2026 Admin</div>
+  <div class="nav-brand">🔐 Worlds2026 Admin</div>
   <a href="/" style="margin-left:auto;color:var(--muted);font-size:.83rem">← Back to app</a>
 </nav>
 <main>
@@ -78,14 +78,9 @@ tr:last-child td{border-bottom:none}
   <div class="card">
     <h2>📋 Matches &amp; Results</h2>
     <p style="color:var(--muted);font-size:.8rem;margin-bottom:12px">
-      Data sourced live from ESPN. Set result to award tokens to correct predictors.
-      Lock/unlock controls whether new predictions are accepted.
+      Results come from the match feed and are auto-awarded when a series finishes.
+      Set a result manually only if the feed is wrong or late. Lock/unlock controls whether new predictions are accepted.
     </p>
-    <div style="margin-bottom:12px">
-      <button class="btn btn-primary" onclick="reprocessOU()">🔄 Reprocess All O/U Awards</button>
-      <span style="color:var(--muted);font-size:.78rem;margin-left:10px">Re-runs auto-award for all finished matches that missed O/U rewards</span>
-    </div>
-    <div id="reprocess-msg"></div>
     <div class="filter-bar" id="stage-filter"></div>
     <div id="matches-table-wrap"><em style="color:var(--muted)">Loading…</em></div>
     <div id="result-msg"></div>
@@ -105,6 +100,20 @@ tr:last-child td{border-bottom:none}
       <div id="reset-msg"></div>
     </div>
   </div>
+
+  <div class="card" style="border-color:var(--red)">
+    <h2>⚠️ Reset Season</h2>
+    <p style="color:var(--muted);font-size:.8rem;margin-bottom:12px">
+      Starts a fresh tournament: every account is kept, tokens go back to 3,000 and the
+      Correct / Predictions counters go to 0. <strong>All predictions and all match results are deleted.</strong>
+      This cannot be undone.
+    </p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+      <div><label>Type RESET to confirm</label><input id="reset-season-confirm" placeholder="RESET" style="width:180px" autocomplete="off"/></div>
+      <button class="btn btn-danger" onclick="resetSeason()">Reset Season</button>
+    </div>
+    <div id="reset-season-msg"></div>
+  </div>
 </div>
 
 </main>
@@ -116,11 +125,14 @@ let overrides = {};
 let activeFilter = 'all';
 
 const STAGE_LABELS = {
-  'all':'All','group-stage':'Group Stage','round-of-32':'Round of 32',
-  'round-of-16':'Round of 16','quarterfinals':'Quarters','semifinals':'Semis',
-  '3rd-place-match':'3rd Place','final':'Final'
+  'all':'All','play-in':'Play-In','swiss':'Swiss Stage',
+  'quarterfinals':'Quarterfinals','semifinals':'Semifinals','final':'Final'
 };
-const STAGE_ORDER = ['all','group-stage','round-of-32','round-of-16','quarterfinals','semifinals','3rd-place-match','final'];
+const STAGE_ORDER = ['all','play-in','swiss','quarterfinals','semifinals','final'];
+function stageRank(s){ const i = STAGE_ORDER.indexOf(s); return i < 0 ? STAGE_ORDER.length : i; }
+function esc(s){
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
 
 async function api(method, path, body){
   const opts = {method, headers:{'Content-Type':'application/json'}};
@@ -150,7 +162,7 @@ async function unlock(){
 
 async function loadAll(){
   const [mRes, lRes] = await Promise.all([
-    api('GET','/api/espn/matches'),
+    api('GET','/api/matches'),
     api('GET','/api/leaderboard')
   ]);
   matches = mRes.ok ? mRes.data : [];
@@ -161,7 +173,7 @@ async function loadAll(){
   const liveCount   = matches.filter(m=>m.statusState==='in').length;
   document.getElementById('admin-stats').innerHTML=`
     <div class="stat"><div class="stat-val">${lb.length}</div><div class="stat-lbl">Players</div></div>
-    <div class="stat"><div class="stat-val">${matches.length}</div><div class="stat-lbl">ESPN Matches</div></div>
+    <div class="stat"><div class="stat-val">${matches.length}</div><div class="stat-lbl">Matches</div></div>
     <div class="stat"><div class="stat-val">${liveCount}</div><div class="stat-lbl">Live Now</div></div>
     <div class="stat"><div class="stat-val">${totalPreds}</div><div class="stat-lbl">Predictions</div></div>
     <div class="stat"><div class="stat-val">${(totalTokens/1000).toFixed(0)}k</div><div class="stat-lbl">Tokens in Play</div></div>
@@ -169,9 +181,9 @@ async function loadAll(){
 
   // Stage filter pills
   const stages = ['all', ...new Set(matches.map(m=>m.stage).filter(Boolean))];
-  stages.sort((a,b)=>STAGE_ORDER.indexOf(a)-STAGE_ORDER.indexOf(b));
+  stages.sort((a,b)=>stageRank(a)-stageRank(b));
   document.getElementById('stage-filter').innerHTML = stages.map(s=>
-    `<span class="filter-pill${s===activeFilter?' active':''}" onclick="setFilter('${s}')">${STAGE_LABELS[s]||s}</span>`
+    `<span class="filter-pill${s===activeFilter?' active':''}" data-stage="${esc(s)}" onclick="setFilter('${esc(s)}')">${esc(STAGE_LABELS[s]||s)}</span>`
   ).join('');
 
   renderMatchTable();
@@ -192,7 +204,7 @@ async function loadAll(){
 function setFilter(s){
   activeFilter=s;
   document.querySelectorAll('.filter-pill').forEach(p=>{
-    p.classList.toggle('active', p.textContent.trim()===(STAGE_LABELS[s]||s));
+    p.classList.toggle('active', p.dataset.stage === s);
   });
   renderMatchTable();
 }
@@ -206,7 +218,7 @@ function renderMatchTable(){
   });
 
   let html=`<table><thead><tr>
-    <th>Match</th><th>Kick-off (GMT+7)</th><th>Status</th><th>Score</th><th>Set Result</th><th>Set O/U</th><th>Lock</th>
+    <th>Match</th><th>Kick-off (GMT+7)</th><th>Status</th><th>Score</th><th>Set Result</th><th>Lock</th>
   </tr></thead><tbody>`;
 
   list.forEach(m=>{
@@ -230,43 +242,27 @@ function renderMatchTable(){
 
     const resultCell = m.adminResult
       ? `<span style="color:var(--muted);font-size:.76rem">Done ✓</span>
-         <button class="btn btn-sm btn-danger" style="margin-left:5px;font-size:.65rem" onclick="clearResult('${m.id}','${m.home}','${m.away}')">Clear</button>`
-      : `<select id="res-${m.id}" style="width:auto;padding:3px 7px;font-size:.78rem">
+         <button class="btn btn-sm btn-danger" style="margin-left:5px;font-size:.65rem" onclick="clearResult('${esc(m.id)}')">Clear</button>`
+      : `<select id="res-${esc(m.id)}" style="width:auto;padding:3px 7px;font-size:.78rem">
            <option value="">-- pick --</option>
-           <option value="home">🏠 ${m.home} Win</option>
-           <option value="draw">🤝 Draw</option>
-           <option value="away">✈️ ${m.away} Win</option>
+           <option value="home">${esc(m.home)} Win</option>
+           <option value="away">${esc(m.away)} Win</option>
          </select>
-         <button class="btn btn-sm btn-green" style="margin-left:5px" onclick="setResult('${m.id}','${m.home}','${m.away}')">Set</button>`;
+         <button class="btn btn-sm btn-green" style="margin-left:5px" onclick="setResult('${esc(m.id)}')">Set</button>`;
 
     const lockCell = m.adminResult ? '' : m.locked
-      ? `<button class="btn btn-sm btn-blue" onclick="toggleLock('${m.id}',false)">Unlock</button>`
-      : `<button class="btn btn-sm btn-danger" onclick="toggleLock('${m.id}',true)">Lock</button>`;
+      ? `<button class="btn btn-sm btn-blue" onclick="toggleLock('${esc(m.id)}',false)">Unlock</button>`
+      : `<button class="btn btn-sm btn-danger" onclick="toggleLock('${esc(m.id)}',true)">Lock</button>`;
 
-    const homeLogo = m.homeLogo ? `<img class="team-logo" src="${m.homeLogo}" alt="">` : '';
-    const awayLogo = m.awayLogo ? `<img class="team-logo" src="${m.awayLogo}" alt="">` : '';
-
-    const ouDone = m.ouResult;
-    const ouLine = m.ouLine ? `O/U ${m.ouLine}` : '';
-    const ouCell = ouDone
-      ? `<span style="color:var(--green);font-size:.76rem">✓ ${ouDone.toUpperCase()}</span>
-         <button class="btn btn-sm btn-danger" style="margin-left:5px;font-size:.65rem" onclick="clearOUResult('${m.id}','${m.home}','${m.away}')">Clear</button>`
-      : (m.statusState==='post'
-          ? `<select id="ou-${m.id}" style="width:auto;padding:3px 7px;font-size:.78rem">
-               <option value="">-- ${ouLine||'pick'} --</option>
-               <option value="over">⬆ Over</option>
-               <option value="under">⬇ Under</option>
-             </select>
-             <button class="btn btn-sm btn-green" style="margin-left:5px" onclick="setOUResult('${m.id}')">Set</button>`
-          : `<span style="color:var(--muted);font-size:.75rem">${ouLine||'No O/U'}</span>`);
+    const homeLogo = m.homeLogo ? `<img class="team-logo" src="${esc(m.homeLogo)}" alt="">` : '';
+    const awayLogo = m.awayLogo ? `<img class="team-logo" src="${esc(m.awayLogo)}" alt="">` : '';
 
     html+=`<tr>
-      <td>${homeLogo}${m.home} <span style="color:var(--muted)">vs</span> ${m.away}${awayLogo}</td>
+      <td>${homeLogo}${esc(m.home)} <span style="color:var(--muted)">vs</span> ${esc(m.away)}${awayLogo}</td>
       <td style="font-size:.76rem;color:var(--muted);white-space:nowrap">${fmtTime(m.time)}</td>
       <td>${statusBadge}</td>
       <td>${scoreCell}</td>
       <td>${resultCell}</td>
-      <td>${ouCell}</td>
       <td>${lockCell}</td>
     </tr>`;
   });
@@ -275,7 +271,7 @@ function renderMatchTable(){
   document.getElementById('matches-table-wrap').innerHTML=html;
 }
 
-async function setResult(matchId, homeName, awayName){
+async function setResult(matchId){
   const sel = document.getElementById('res-'+matchId);
   if(!sel){ return; }
   const result = sel.value;
@@ -289,8 +285,10 @@ async function setResult(matchId, homeName, awayName){
   }
 }
 
-async function clearResult(matchId, home, away){
-  if(!confirm(`Clear result for ${home} vs ${away}? This reverts tokens for winners.`)) return;
+async function clearResult(matchId){
+  const m = matches.find(x => x.id === matchId);
+  const label = m ? `${m.home} vs ${m.away}` : matchId;
+  if(!confirm(`Clear result for ${label}? This reverts tokens for winners.`)) return;
   const res = await api('POST','/api/admin/clear_result',{admin_password:adminPw, match_id:matchId});
   if(res.ok){
     showMsg('result-msg',`✓ Result cleared (was ${res.data.old_result}). Reverted ${res.data.reverted_users.length} user(s). Now set the correct result.`,true);
@@ -319,45 +317,17 @@ async function resetPassword(){
   }
 }
 
-async function reprocessOU(){
-  if(!confirm('Reprocess O/U awards for all finished matches? This will award tokens for any missed O/U predictions.')) return;
-  const res = await api('POST','/api/admin/reprocess_ou',{admin_password:adminPw});
-  const msgEl = document.getElementById('reprocess-msg');
+async function resetSeason(){
+  const confirmText = document.getElementById('reset-season-confirm').value.trim();
+  if(confirmText !== 'RESET'){ showMsg('reset-season-msg','Type RESET (all caps) to confirm',false); return; }
+  if(!confirm('Delete ALL predictions and match results, and set every account back to 3,000 tokens? This cannot be undone.')) return;
+  const res = await api('POST','/api/admin/reset_season',{admin_password:adminPw, confirm:'RESET'});
   if(res.ok){
-    const p = res.data.processed;
-    msgEl.className='msg msg-ok';
-    msgEl.textContent = p.length
-      ? `✓ Processed ${p.length} match(es): ${p.join(', ')}`
-      : `✓ No new O/U results to process (${res.data.skipped_count} already done)`;
-    if(p.length) loadAll();
-  } else {
-    msgEl.className='msg msg-err';
-    msgEl.textContent = res.data.error||'Error';
-  }
-}
-
-async function setOUResult(matchId){
-  const sel = document.getElementById('ou-'+matchId);
-  if(!sel) return;
-  const result = sel.value;
-  if(!result){ alert('Pick Over or Under first'); return; }
-  const res = await api('POST','/api/admin/ou_result',{admin_password:adminPw, match_id:matchId, result});
-  if(res.ok){
-    showMsg('result-msg',`✓ O/U result set! ${res.data.winner_count} winner(s) awarded 500 tokens.`,true);
+    document.getElementById('reset-season-confirm').value = '';
+    showMsg('reset-season-msg',`✓ Season reset: ${res.data.users_reset} account(s) back to ${res.data.tokens.toLocaleString()} tokens.`,true);
     loadAll();
   } else {
-    showMsg('result-msg', res.data.error||'Error', false);
-  }
-}
-
-async function clearOUResult(matchId, home, away){
-  if(!confirm(`Clear O/U result for ${home} vs ${away}? This reverts tokens for winners.`)) return;
-  const res = await api('POST','/api/admin/clear_ou_result',{admin_password:adminPw, match_id:matchId});
-  if(res.ok){
-    showMsg('result-msg',`✓ O/U cleared (was ${res.data.old_result}). Reverted ${res.data.reverted_users.length} user(s). Now reprocess to re-judge.`,true);
-    loadAll();
-  } else {
-    showMsg('result-msg', res.data.error||'Error', false);
+    showMsg('reset-season-msg', res.data.error||'Error', false);
   }
 }
 

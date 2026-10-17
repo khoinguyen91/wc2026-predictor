@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>World Cup 2026 Predictor</title>
+<title>Worlds 2026 Predictor</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -86,7 +86,7 @@ input:focus{border-color:var(--accent)}
 .team.left{align-items:flex-end;text-align:right}
 .team.right{align-items:flex-start;text-align:left}
 .team-logo{width:42px;height:42px;object-fit:contain;border-radius:4px}
-.team-logo-fallback{width:42px;height:42px;font-size:2rem;line-height:42px;text-align:center}
+.team-logo-fallback{width:42px;height:42px;font-size:.85rem;font-weight:700;line-height:42px;text-align:center;border:1px solid var(--border);border-radius:50%;color:var(--muted)}
 .team-name{font-size:.88rem;font-weight:600;line-height:1.2}
 .team-abbr{font-size:.7rem;color:var(--muted);font-weight:500}
 
@@ -104,7 +104,6 @@ input:focus{border-color:var(--accent)}
 .result-badge{font-size:.7rem;font-weight:700;padding:2px 9px;border-radius:20px;border:1px solid}
 .result-home{color:var(--green);border-color:var(--green)}
 .result-away{color:var(--red);border-color:var(--red)}
-.result-draw{color:var(--accent);border-color:var(--accent)}
 
 /* PREDICTION BUTTONS */
 .predict-btns{display:flex;gap:5px;margin-top:8px;justify-content:center;flex-wrap:wrap}
@@ -162,7 +161,7 @@ input:focus{border-color:var(--accent)}
 <body>
 
 <nav>
-  <div class="nav-brand">⚽ WC2026</div>
+  <div class="nav-brand">🎮 Worlds2026</div>
   <div class="nav-links">
     <button class="nav-btn active" id="nb-matches"    onclick="showPage('matches')">Matches</button>
     <button class="nav-btn"        id="nb-leaderboard" onclick="showPage('leaderboard')">Leaderboard</button>
@@ -210,7 +209,7 @@ input:focus{border-color:var(--accent)}
 <!-- MATCHES -->
 <div class="page active" id="page-matches">
   <div class="hero">
-    <div class="hero-title">⚽ World Cup 2026</div>
+    <div class="hero-title">🎮 Worlds 2026</div>
     <div class="hero-sub">Predict results · Earn tokens · Beat your colleagues</div>
     <div class="hero-cta" id="hero-cta">
       <button class="btn btn-primary" onclick="showPage('auth')">Join Now — Get 3,000 🪙</button>
@@ -246,28 +245,17 @@ let username = localStorage.getItem('wc_username');
 let myTokens = parseInt(localStorage.getItem('wc_tokens') || '0');
 let allMatches      = [];
 let myPredictions   = {};
-let myOUPredictions = {};
 let activeStage     = 'all';
 let _matchLoadGen   = 0;  // generation counter — discard stale loads
 
-// ── Country flag emoji fallback ────────────────────────────────────────────
-const FLAGS = {
-  "Mexico":"🇲🇽","South Africa":"🇿🇦","Uruguay":"🇺🇾","Morocco":"🇲🇦",
-  "Argentina":"🇦🇷","Albania":"🇦🇱","Spain":"🇪🇸","Brazil":"🇧🇷",
-  "France":"🇫🇷","Saudi Arabia":"🇸🇦","Germany":"🇩🇪","Japan":"🇯🇵",
-  "England":"🏴󠁧󠁢󠁥󠁮󠁧󠁿","Nigeria":"🇳🇬","Netherlands":"🇳🇱","Senegal":"🇸🇳",
-  "Portugal":"🇵🇹","South Korea":"🇰🇷","United States":"🇺🇸","USA":"🇺🇸",
-  "Poland":"🇵🇱","Italy":"🇮🇹","Ecuador":"🇪🇨","Croatia":"🇭🇷","Australia":"🇦🇺",
-  "Belgium":"🇧🇪","Cameroon":"🇨🇲","Colombia":"🇨🇴","Iran":"🇮🇷",
-  "Switzerland":"🇨🇭","Ghana":"🇬🇭","Denmark":"🇩🇰","Serbia":"🇷🇸",
-  "Canada":"🇨🇦","Qatar":"🇶🇦","Haiti":"🇭🇹","Scotland":"🏴󠁧󠁢󠁳󠁣󠁴󠁿",
-  "Turkey":"🇹🇷","Czechia":"🇨🇿","Bosnia-Herzegovina":"🇧🇦","Paraguay":"🇵🇾",
-  "Cape Verde":"🇨🇻","Sweden":"🇸🇪","Tunisia":"🇹🇳","Egypt":"🇪🇬",
-  "New Zealand":"🇳🇿","Iraq":"🇮🇶","Norway":"🇳🇴","Algeria":"🇩🇿",
-  "Austria":"🇦🇹","Jordan":"🇯🇴","Ivory Coast":"🇨🇮","Curacao":"🇨🇼",
-  "TBD":"🏳️"
-};
-function flagEmoji(name){ return FLAGS[name] || '🏳️'; }
+// ── Helpers ────────────────────────────────────────────────────────────────
+const STAGE_ORDER  = ['all','play-in','swiss','quarterfinals','semifinals','final'];
+const STAGE_LABELS = {'all':'All Stages','play-in':'Play-In','swiss':'Swiss Stage',
+  'quarterfinals':'Quarterfinals','semifinals':'Semifinals','final':'Final'};
+function stageRank(s){ const i = STAGE_ORDER.indexOf(s); return i < 0 ? STAGE_ORDER.length : i; }
+function esc(s){
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
 
 // ── API helper ─────────────────────────────────────────────────────────────
 async function api(method, path, body){
@@ -333,7 +321,7 @@ async function _applyLogin(data){
   localStorage.setItem('wc_username',username);
   localStorage.setItem('wc_tokens',myTokens);
   updateNav();
-  // Switch to matches page without re-fetching ESPN — just refresh predictions
+  // Switch to matches page without re-fetching — just refresh predictions
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
   document.getElementById('page-matches').classList.add('active');
@@ -374,7 +362,7 @@ function logout(){
   ['wc_token','wc_username','wc_tokens'].forEach(k=>localStorage.removeItem(k));
   updateNav();
   myPredictions = {};
-  renderMatches();  // re-render in-place without re-fetching ESPN
+  renderMatches();  // re-render in-place without re-fetching matches
 }
 
 // ── Matches ────────────────────────────────────────────────────────────────
@@ -383,13 +371,12 @@ async function loadMatches({ predictionsOnly = false } = {}){
 
   // If we already have match data and just need to refresh predictions (post-login)
   if(predictionsOnly && allMatches.length){
-    if(!token){ myPredictions = {}; myOUPredictions = {}; renderMatches(); return; }
-    // /api/me already includes predictions and ouPredictions — single call
+    if(!token){ myPredictions = {}; renderMatches(); return; }
+    // /api/me already includes predictions — single call
     const meRes = await api('GET', '/api/me');
     if(gen !== _matchLoadGen) return;
     if(meRes.ok){
       myPredictions   = meRes.data.predictions   || {};
-      myOUPredictions = meRes.data.ouPredictions || {};
       myTokens = meRes.data.tokens;
       localStorage.setItem('wc_tokens', myTokens);
       updateNav();
@@ -398,9 +385,9 @@ async function loadMatches({ predictionsOnly = false } = {}){
     return;
   }
 
-  // Two parallel calls: ESPN matches + user data (not three)
+  // Two parallel calls: matches + user data (not three)
   const [mRes, meRes] = await Promise.all([
-    api('GET', '/api/espn/matches'),
+    api('GET', '/api/matches'),
     token ? api('GET', '/api/me') : Promise.resolve({ok:false, data:{}})
   ]);
 
@@ -414,7 +401,6 @@ async function loadMatches({ predictionsOnly = false } = {}){
 
   allMatches      = mRes.data || [];
   myPredictions   = meRes.ok ? (meRes.data.predictions   || {}) : {};
-  myOUPredictions = meRes.ok ? (meRes.data.ouPredictions || {}) : {};
 
   // Sync token count from server — catches auto-awarded tokens
   if(meRes.ok && meRes.data.tokens !== undefined){
@@ -425,17 +411,10 @@ async function loadMatches({ predictionsOnly = false } = {}){
 
   // Build stage pills
   const stages = ['all', ...new Set(allMatches.map(m=>m.stage).filter(Boolean))];
-  const stageOrder = ['all','group-stage','round-of-32','round-of-16','quarterfinals','semifinals','3rd-place-match','final'];
-  stages.sort((a,b) => stageOrder.indexOf(a) - stageOrder.indexOf(b));
-
-  const stageLabels = {
-    'all':'All Stages','group-stage':'Group Stage','round-of-32':'Round of 32',
-    'round-of-16':'Round of 16','quarterfinals':'Quarter-Finals',
-    'semifinals':'Semi-Finals','3rd-place-match':'3rd Place','final':'Final'
-  };
+  stages.sort((a,b) => stageRank(a) - stageRank(b));
 
   document.getElementById('stage-bar').innerHTML = stages.map(s=>
-    `<button class="stage-pill${s===activeStage?' active':''}" onclick="setStage('${s}')">${stageLabels[s]||s}</button>`
+    `<button class="stage-pill${s===activeStage?' active':''}" data-stage="${esc(s)}" onclick="setStage('${esc(s)}')">${esc(STAGE_LABELS[s]||s)}</button>`
   ).join('');
 
   renderMatches();
@@ -444,11 +423,7 @@ async function loadMatches({ predictionsOnly = false } = {}){
 function setStage(s){
   activeStage = s;
   document.querySelectorAll('.stage-pill').forEach(p=>{
-    p.classList.toggle('active', p.textContent.trim() === ({
-      'all':'All Stages','group-stage':'Group Stage','round-of-32':'Round of 32',
-      'round-of-16':'Round of 16','quarterfinals':'Quarter-Finals',
-      'semifinals':'Semi-Finals','3rd-place-match':'3rd Place','final':'Final'
-    }[s]||s));
+    p.classList.toggle('active', p.dataset.stage === s);
   });
   renderMatches();
 }
@@ -509,12 +484,14 @@ function renderMatches(){
 function teamHTML(m, side){
   const name  = m[side];          // m.home or m.away
   const logo  = m[side+'Logo'];   // m.homeLogo or m.awayLogo
+  const abbr  = m[side+'Abbr'] || name.slice(0, 3).toUpperCase();
   const cls   = side==='home' ? 'left' : 'right';
+  const fb    = `<span class="team-logo-fallback">${esc(abbr)}</span>`;
   const imgEl = logo
-    ? `<img class="team-logo" src="${logo}" alt="${name}" onerror="this.style.display='none';this.nextSibling.style.display=''">
-       <span class="team-logo-fallback" style="display:none">${flagEmoji(name)}</span>`
-    : `<span class="team-logo-fallback">${flagEmoji(name)}</span>`;
-  return `<div class="team ${cls}">${imgEl}<div class="team-name">${name}</div></div>`;
+    ? `<img class="team-logo" src="${esc(logo)}" alt="${esc(name)}" onerror="this.style.display='none';this.nextElementSibling.style.display=''">
+       ${fb.replace('class="team-logo-fallback"', 'class="team-logo-fallback" style="display:none"')}`
+    : fb;
+  return `<div class="team ${cls}">${imgEl}<div class="team-name">${esc(name)}</div></div>`;
 }
 
 function matchCardHTML(m){
@@ -522,8 +499,8 @@ function matchCardHTML(m){
   const isLive    = m.statusState === 'in';
   const isDone    = m.statusState === 'post';
 
-  // Use espnResult (auto-derived) as the source of truth — it's set as soon as match finishes
-  const result    = m.espnResult || m.adminResult || null;
+  // sourceResult (auto-derived) is the source of truth — set as soon as the series finishes
+  const result    = m.sourceResult || m.adminResult || null;
   const hasResult = !!result;
   const isCorrect = pred && hasResult && pred.prediction === result;
   const isWrong   = pred && hasResult && pred.prediction !== result;
@@ -548,15 +525,12 @@ function matchCardHTML(m){
   // Score (shown when live or done)
   let scoreHtml = '';
   if(isLive || isDone){
-    const hasPens = m.homeShootout != null && m.awayShootout != null;
-    const ftNote = m.fullTimeScore
-      ? `<div style="font-size:.6rem;color:var(--muted);margin-top:2px">FT ${m.fullTimeScore}${hasPens ? ` (pens ${m.homeShootout}-${m.awayShootout})` : ' (AET)'}</div>`
-      : '';
+    const bo = m.bestOf ? `<div style="font-size:.6rem;color:var(--muted);margin-top:2px">Best of ${m.bestOf}</div>` : '';
     scoreHtml = `<div class="score-box">
       <span class="score-num" style="${isLive?'color:var(--live)':''}">${m.homeScore||0}</span>
       <span class="score-sep">-</span>
       <span class="score-num" style="${isLive?'color:var(--live)':''}">${m.awayScore||0}</span>
-    </div>${ftNote}`;
+    </div>${bo}`;
   } else {
     scoreHtml = `<div class="match-vs">VS</div>`;
   }
@@ -564,8 +538,8 @@ function matchCardHTML(m){
   // Result badge
   let resultBadge = '';
   if(result){
-    const cls = result==='draw' ? 'result-draw' : result==='home' ? 'result-home' : 'result-away';
-    const lbl = result==='draw' ? 'DRAW' : result==='home' ? m.home.toUpperCase()+' WIN' : m.away.toUpperCase()+' WIN';
+    const cls = result==='home' ? 'result-home' : 'result-away';
+    const lbl = (result==='home' ? m.home : m.away).toUpperCase()+' WIN';
     resultBadge = `<span class="result-badge ${cls}">✓ ${lbl}</span>`;
   }
 
@@ -592,11 +566,10 @@ function matchCardHTML(m){
     const sel = pred ? pred.prediction : null;
     predHtml = `<div class="predict-btns">
       <button class="pred-btn${sel==='home'?' selected':''}" onclick="predict('${m.id}','home')">
-        ${flagEmoji(m.home)} Home
+        ${esc(m.homeAbbr || m.home)}
       </button>
-      <button class="pred-btn${sel==='draw'?' selected':''}" onclick="predict('${m.id}','draw')">DRAW</button>
       <button class="pred-btn${sel==='away'?' selected':''}" onclick="predict('${m.id}','away')">
-        ${flagEmoji(m.away)} Away
+        ${esc(m.awayAbbr || m.away)}
       </button>
     </div>`;
   } else if(effectiveLocked && pred && !hasResult){
@@ -611,65 +584,6 @@ function matchCardHTML(m){
     predHtml = `<div class="predict-btns"><span class="locked-tag">Login to predict</span></div>`;
   }
 
-  // ── Over/Under section ──────────────────────────────────────────────────
-  let ouHtml = '';
-  const ouPred    = myOUPredictions[m.id];
-  const ouAdminRes= m.ouResult;   // set by auto-award or admin
-  // Show O/U section if: line is available, OR result exists, OR user has a pick
-  if(m.ouLine != null || ouAdminRes || ouPred){
-    const ouCorrect = ouPred && ouAdminRes && ouPred.prediction === ouAdminRes;
-    const ouWrong   = ouPred && ouAdminRes && ouPred.prediction !== ouAdminRes;
-    const ouLine    = m.ouLine;   // may be null for finished matches
-
-    let ouResultBadge = '';
-    if(ouAdminRes){
-      const cl = ouAdminRes==='over' ? 'result-home' : 'result-away';
-      ouResultBadge = `<span class="result-badge ${cl}">✓ ${ouAdminRes.toUpperCase()}</span>`;
-    }
-
-    let ouBtns = '';
-    if(ouAdminRes && ouPred){
-      const cl = ouCorrect?' correct-pred':ouWrong?' wrong-pred':'';
-      ouBtns = `<button class="pred-btn selected${cl}" disabled>
-        O/U: ${ouPred.prediction.toUpperCase()} ${ouCorrect?'✓ +300':'✗ -200'}
-      </button>`;
-    } else if(ouAdminRes && !ouPred){
-      ouBtns = `<span class="locked-tag" style="color:var(--muted)">No O/U pick</span>`;
-    } else if(ouPred && !ouAdminRes && (isLive || isDone)){
-      const icon = isLive ? '🔴' : '⏳';
-      ouBtns = `<button class="pred-btn selected" style="opacity:.7" disabled>
-        ${icon} O/U: ${ouPred.prediction.toUpperCase()} — ${isLive?'live':'pending'}
-      </button>`;
-    } else if(!effectiveLocked && token && !ouAdminRes && ouLine != null){
-      const sel = ouPred ? ouPred.prediction : null;
-      ouBtns = `
-        <button class="pred-btn${sel==='over'?' selected':''}" onclick="predictOU('${m.id}','over')">
-          OVER ${ouLine}
-        </button>
-        <button class="pred-btn${sel==='under'?' selected':''}" onclick="predictOU('${m.id}','under')">
-          UNDER ${ouLine}
-        </button>`;
-    } else if(ouPred && !ouAdminRes){
-      ouBtns = `<button class="pred-btn selected" disabled>🔒 O/U: ${ouPred.prediction.toUpperCase()}</button>`;
-    } else if(!token && ouLine != null){
-      ouBtns = `<span class="locked-tag">Login for O/U</span>`;
-    }
-
-    const fmtOdds = v => v == null ? null : (v > 0 ? '+'+v : ''+v);
-    const oddsInfo = (fmtOdds(m.overOdds) && fmtOdds(m.underOdds))
-      ? `&nbsp;·&nbsp;<span style="color:var(--green)">Over ${fmtOdds(m.overOdds)}</span>&nbsp;/&nbsp;<span style="color:var(--red)">Under ${fmtOdds(m.underOdds)}</span>`
-      : '';
-    const lineLabel = ouLine != null ? `O/U ${ouLine}` : 'O/U';
-    ouHtml = `<div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px">
-      <div style="font-size:.68rem;color:var(--muted);margin-bottom:5px;text-align:center">
-        ${lineLabel}${oddsInfo}
-        &nbsp;·&nbsp;<span style="color:var(--muted);font-size:.62rem">via ESPN</span>
-      </div>
-      ${ouResultBadge}
-      <div class="predict-btns">${ouBtns}</div>
-    </div>`;
-  }
-
   return `<div class="${cardCls}" id="mc-${m.id}">
     ${teamHTML(m,'home')}
     <div class="match-center">
@@ -677,7 +591,6 @@ function matchCardHTML(m){
       ${scoreHtml}
       ${resultBadge}
       ${predHtml}
-      ${ouHtml}
     </div>
     ${teamHTML(m,'away')}
   </div>`;
@@ -696,24 +609,6 @@ async function predict(matchId, prediction){
     const card = document.getElementById('mc-'+matchId);
     if(card && m) card.outerHTML = matchCardHTML(m);
     toast(prev ? 'Prediction updated!' : `Placed! -200🪙 · Balance: ${myTokens.toLocaleString()}`);
-  } else {
-    toast(res.data.error || 'Failed', 'error');
-  }
-}
-
-async function predictOU(matchId, prediction){
-  if(!token){ showPage('auth'); return; }
-  const res = await api('POST', '/api/predict/ou', {match_id: matchId, prediction});
-  if(res.ok){
-    myTokens = res.data.tokens;
-    localStorage.setItem('wc_tokens', myTokens);
-    updateNav();
-    const prev = myOUPredictions[matchId];
-    myOUPredictions[matchId] = { prediction };
-    const m = allMatches.find(x=>x.id===matchId);
-    const card = document.getElementById('mc-'+matchId);
-    if(card && m) card.outerHTML = matchCardHTML(m);
-    toast(prev ? 'O/U updated!' : `O/U placed! -200🪙 · Balance: ${myTokens.toLocaleString()}`);
   } else {
     toast(res.data.error || 'Failed', 'error');
   }
@@ -783,19 +678,18 @@ async function syncTokens(){
 }
 
 async function loadMyPicks(){
-  const [meRes, mRes] = await Promise.all([api('GET','/api/me'), api('GET','/api/espn/matches')]);
+  const [meRes, mRes] = await Promise.all([api('GET','/api/me'), api('GET','/api/matches')]);
   if(!meRes.ok){ showPage('auth'); return; }
   const me = meRes.data;
   allMatches      = mRes.ok ? mRes.data : allMatches;
   myPredictions   = me.predictions    || {};
-  myOUPredictions = me.ouPredictions  || {};
 
   // Always sync token display from server
   myTokens = me.tokens;
   localStorage.setItem('wc_tokens', myTokens);
   updateNav();
 
-  const total    = me.predictionCount || 0;  // server counts both win/draw + O/U bets
+  const total    = me.predictionCount || 0;  // total bets placed
   const correct  = me.correct || 0;
   const accuracy = total>0 ? Math.round(correct/total*100)+'%' : '-';
 
@@ -806,8 +700,8 @@ async function loadMyPicks(){
     <div class="stat-card"><div class="stat-val">${accuracy}</div><div class="stat-label">Accuracy</div></div>
   `;
 
-  // Show matches where user has either a win/loss OR an O/U prediction
-  const predicted = allMatches.filter(m => myPredictions[m.id] || myOUPredictions[m.id]);
+  // Show matches where the user has a pick
+  const predicted = allMatches.filter(m => myPredictions[m.id]);
   if(!predicted.length){
     document.getElementById('my-picks-container').innerHTML =
       '<div class="empty">No predictions yet — go to Matches to start!</div>'; return;

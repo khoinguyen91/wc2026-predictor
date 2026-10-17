@@ -1,6 +1,6 @@
 @echo off
 echo ====================================================
-echo   World Cup 2026 Predictor
+echo   Worlds 2026 Predictor
 echo ====================================================
 echo.
 echo   App:   http://localhost:8080
@@ -13,6 +13,10 @@ echo   Otherwise data is saved in the local data\ folder
 echo.
 
 set ADMIN_PASSWORD=admin1234
+
+REM Leaguepedia match feed. The Windows path fetches anonymously (may be rate-limited);
+REM bot-password login is only used on Linux/Render. Override the page prefix if needed:
+REM set WORLDS_PAGE_PREFIX=2026 Season World Championship
 
 REM Paste your MongoDB Atlas connection string here (optional):
 REM set MONGO_URI=mongodb+srv://user:password@cluster.mongodb.net/wc2026

@@ -11,5 +11,11 @@ services:
         value: admin1234
       - key: MONGO_URI
         sync: false          # paste your MongoDB Atlas connection string here
+      - key: LEAGUEPEDIA_USER
+        sync: false          # Special:BotPasswords login name, e.g. YourUser@worlds-predictor
+      - key: LEAGUEPEDIA_PASS
+        sync: false          # the bot password (set in the Render dashboard, never commit it)
+      - key: WORLDS_PAGE_PREFIX
+        value: 2026 Season World Championship   # Leaguepedia OverviewPage prefix — verify
       - key: PORT
         value: 10000

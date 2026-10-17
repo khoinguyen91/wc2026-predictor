@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-World Cup 2026 Predictor
-- ESPN live data (requests on Linux/Render, PowerShell subprocess on Windows)
+Worlds 2026 Predictor (League of Legends World Championship)
+- Winner-only picks on best-of series (no draws)
+- Match feed behind fetch_matches() (requests on Linux/Render, PowerShell subprocess on Windows)
 - MongoDB Atlas for persistent storage
 - Pure stdlib HTTP server (no Flask needed)
 """
@@ -16,6 +17,7 @@ import sys
 import time
 import uuid
 import re
+import html
 import threading
 import subprocess
 
@@ -42,22 +44,13 @@ ADMIN_PW  = os.environ.get("ADMIN_PASSWORD", "admin1234")
 PORT      = int(os.environ.get("PORT", 8080))
 IS_WIN    = sys.platform == "win32"
 
-ESPN_URL = (
-    "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world"
-    "/scoreboard?dates=20260611-20260720&limit=200"
-)
-
 STAGE_LABELS = {
-    "group-stage":     "Group Stage",
-    "round-of-32":     "Round of 32",
-    "round-of-16":     "Round of 16",
-    "quarterfinals":   "Quarter-Finals",
-    "semifinals":      "Semi-Finals",
-    "3rd-place-match": "3rd Place Match",
-    "final":           "Final",
+    "play-in":       "Play-In",
+    "swiss":         "Swiss Stage",
+    "quarterfinals": "Quarterfinals",
+    "semifinals":    "Semifinals",
+    "final":         "Final",
 }
-KNOCKOUT_STAGES = {"round-of-32", "round-of-16", "quarterfinals", "semifinals",
-                   "3rd-place-match", "final"}
 
 # ── Storage layer (MongoDB or JSON fallback) ──────────────────────────────────
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -200,62 +193,32 @@ def db_all_predictions():
         return {doc["username"]: doc.get("picks", {}) for doc in docs}
     return _jload("predictions", {})
 
-# ── O/U predictions ───────────────────────────────────────────────────────────
-def db_get_ou_predictions(username):
-    db = get_db()
-    if db is not None:
-        doc = _safe_db(lambda: db.ou_predictions.find_one({"username": username}, {"_id": 0}), None)
-        return doc.get("picks", {}) if doc else {}
-    return _jload("ou_predictions", {}).get(username, {})
+# ── Season reset ──────────────────────────────────────────────────────────────
+_RESET_COLLECTIONS = ("predictions", "overrides", "ou_predictions", "ou_overrides")
 
-def db_set_ou_prediction(username, match_id, prediction, ou_line=None):
-    record = {"prediction": prediction, "ts": time.time()}
-    if ou_line is not None:
-        record["ouLine"] = ou_line
-    db = get_db()
-    if db is not None:
-        _safe_db(lambda: db.ou_predictions.update_one(
-            {"username": username},
-            {"$set": {"picks." + match_id: record}},
-            upsert=True), None)
-        return
-    preds = _jload("ou_predictions", {})
-    if username not in preds:
-        preds[username] = {}
-    preds[username][match_id] = record
-    _jsave("ou_predictions", preds)
+def db_reset_season():
+    """Fresh tournament: keep accounts, reset tokens/stats, wipe picks and results.
 
-def db_all_ou_predictions():
+    Also clears the legacy ou_* collections left over from the World Cup version.
+    Returns the number of accounts reset, or None if the database was unreachable.
+    """
     db = get_db()
     if db is not None:
-        docs = _safe_db(lambda: list(db.ou_predictions.find({}, {"_id": 0})), [])
-        return {doc["username"]: doc.get("picks", {}) for doc in docs}
-    return _jload("ou_predictions", {})
+        def _wipe():
+            for coll in _RESET_COLLECTIONS:
+                db[coll].delete_many({})
+            r = db.users.update_many({}, {"$set": {
+                "tokens": INITIAL_TOKENS, "correct": 0, "predictions": 0}})
+            return r.matched_count
+        return _safe_db(_wipe, None)
+    for name in _RESET_COLLECTIONS:
+        _jsave(name, {})
+    users = _jload("users", {})
+    for u in users.values():
+        u.update({"tokens": INITIAL_TOKENS, "correct": 0, "predictions": 0})
+    _jsave("users", users)
+    return len(users)
 
-def db_get_ou_override(match_id):
-    db = get_db()
-    if db is not None:
-        doc = _safe_db(lambda: db.ou_overrides.find_one({"match_id": match_id}, {"_id": 0}), None)
-        return doc or {}
-    return _jload("ou_overrides", {}).get(match_id, {})
-
-def db_set_ou_override(match_id, data):
-    db = get_db()
-    if db is not None:
-        _safe_db(lambda: db.ou_overrides.replace_one(
-            {"match_id": match_id},
-            {"match_id": match_id, **data}, upsert=True), None)
-        return
-    overrides = _jload("ou_overrides", {})
-    overrides[match_id] = data
-    _jsave("ou_overrides", overrides)
-
-def db_all_ou_overrides():
-    db = get_db()
-    if db is not None:
-        docs = _safe_db(lambda: list(db.ou_overrides.find({}, {"_id": 0})), [])
-        return {doc["match_id"]: doc for doc in docs}
-    return _jload("ou_overrides", {})
 
 def db_get_override(match_id):
     db = get_db()
@@ -282,11 +245,17 @@ def db_all_overrides():
         return {doc["match_id"]: doc for doc in docs}
     return _jload("overrides", {})
 
-# ── ESPN fetch ────────────────────────────────────────────────────────────────
-_espn_cache = {"data": None, "ts": 0}
-_espn_lock  = threading.Lock()
+# ── Match feed ────────────────────────────────────────────────────────────────
+# Every source returns a list of match dicts with these fields (see _normalise_match):
+#   id, home, away, homeAbbr, awayAbbr, homeLogo, awayLogo,
+#   homeScore, awayScore   series wins ("" until the match starts),
+#   time                   ISO-8601 UTC start time,
+#   stage                  key of STAGE_LABELS, bestOf (int), statusState "pre"|"in"|"post"
+_match_cache = {"data": None, "ts": 0}
+_match_lock  = threading.Lock()
 
-# PowerShell script template (Windows fallback)
+# PowerShell script template (Windows fallback — Anaconda SSL is broken and the
+# corporate proxy needs the logged-in user's credentials)
 _PS_TPL = (
     "[System.Net.WebRequest]::DefaultWebProxy = [System.Net.WebRequest]::GetSystemWebProxy()\n"
     "[System.Net.WebRequest]::DefaultWebProxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials\n"
@@ -297,160 +266,242 @@ _PS_TPL = (
     "Write-Output $wc.DownloadString('{url}')\n"
 )
 
-def _fetch_espn_raw():
-    """Return raw JSON string from ESPN, or None on failure."""
+def _http_get(url):
+    """Return the response body for `url`, or None on failure."""
     if _HAS_REQUESTS and not IS_WIN:
         # Linux / Render: requests works natively
         try:
-            r = _requests.get(ESPN_URL,
-                headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+            r = _requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+            r.raise_for_status()
             return r.text
         except Exception as e:
-            print("[ESPN] requests error:", e)
+            print("[FEED] requests error:", e)
             return None
-    else:
-        # Windows: SSL broken in Anaconda, use PowerShell
-        try:
-            script = _PS_TPL.format(url=ESPN_URL)
-            proc = subprocess.run(
-                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-                capture_output=True, text=True, timeout=25
-            )
-            if proc.returncode != 0 or not proc.stdout.strip():
-                print("[ESPN] PowerShell error:", proc.stderr[:200])
-                return None
-            return proc.stdout
-        except Exception as e:
-            print("[ESPN] subprocess error:", e)
+    try:
+        script = _PS_TPL.format(url=url)
+        proc = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, text=True, timeout=25
+        )
+        if proc.returncode != 0 or not proc.stdout.strip():
+            print("[FEED] PowerShell error:", proc.stderr[:200])
             return None
+        return proc.stdout
+    except Exception as e:
+        print("[FEED] subprocess error:", e)
+        return None
+
+# ── Leaguepedia provider (lol.fandom.com MediaWiki Cargo API) ─────────────────
+# Table MatchSchedule. NOT yet verified against live data: every anonymous
+# cargoquery was rate-limited while this was written. To get a usable quota set
+# LEAGUEPEDIA_USER / LEAGUEPEDIA_PASS to a Special:BotPasswords login (used on
+# Linux/Render only — the Windows PowerShell path is anonymous GET). Set
+# WORLDS_PAGE_PREFIX to the real OverviewPage prefix once it is confirmed.
+LP_API    = "https://lol.fandom.com/api.php"
+LP_UA     = "worlds2026-predictor/1.0 (internal prediction game)"
+LP_PREFIX = os.environ.get("WORLDS_PAGE_PREFIX", "2026 Season World Championship")
+LP_USER   = os.environ.get("LEAGUEPEDIA_USER", "")
+LP_PASS   = os.environ.get("LEAGUEPEDIA_PASS", "")
+LP_TTL     = 600    # seconds between real API calls
+LP_BACKOFF = 900    # seconds to stay away after a rate-limit response
+LP_PAGE    = 500    # rows per request (anonymous maximum)
+LP_FIELDS  = ("MatchId,Team1,Team2,Team1Score,Team2Score,Winner,BestOf,"
+              "OverviewPage,Tab,Phase,Round,IsNullified,DateTime_UTC=StartUTC")
+_LP_PREFIX_OK = re.compile(r"^[A-Za-z0-9 /_.\-]+$")
+_lp = {"data": None, "ts": 0, "next_try": 0, "session": None, "login_ts": 0}
+
+def _lp_login():
+    """Bot-password login. Returns a requests.Session, or None to go anonymous."""
+    if not (LP_USER and LP_PASS and _HAS_REQUESTS and not IS_WIN):
+        return None
+    if _lp["session"] and time.time() - _lp["login_ts"] < 12 * 3600:
+        return _lp["session"]
+    try:
+        s = _requests.Session()
+        s.headers["User-Agent"] = LP_UA
+        tok = s.get(LP_API, params={"action": "query", "meta": "tokens", "type": "login",
+                                    "format": "json"}, timeout=20).json()["query"]["tokens"]["logintoken"]
+        res = s.post(LP_API, data={"action": "login", "lgname": LP_USER, "lgpassword": LP_PASS,
+                                   "lgtoken": tok, "format": "json"}, timeout=20).json().get("login", {})
+        if res.get("result") != "Success":
+            print("[LP] login failed:", res.get("result"), res.get("reason", ""))
+            return None
+        _lp["session"], _lp["login_ts"] = s, time.time()
+        return s
+    except Exception as e:
+        print("[LP] login error:", type(e).__name__)   # type only — never echo request details
+        return None
+
+def _lp_get(params):
+    """GET the API with `params`; return the parsed JSON dict, or None on failure."""
+    q = dict(params, format="json")
+    try:
+        if _HAS_REQUESTS and not IS_WIN:
+            getter = _lp_login() or _requests
+            return getter.get(LP_API, params=q, headers={"User-Agent": LP_UA}, timeout=25).json()
+        body = _http_get(LP_API + "?" + urllib.parse.urlencode(q))
+        return json.loads(body) if body else None
+    except Exception as e:
+        print("[LP] request error:", type(e).__name__)
+        return None
+
+def _lp_clean(v):
+    return html.unescape(v).strip() if isinstance(v, str) else ""
+
+def _lp_stage(row):
+    """Map Leaguepedia's page/tab/round naming onto STAGE_LABELS keys."""
+    text = " ".join(_lp_clean(row.get(k)) for k in ("OverviewPage", "Tab", "Phase", "Round")).lower()
+    if "play-in" in text or "play in" in text or "playin" in text: return "play-in"
+    if "swiss" in text:    return "swiss"
+    if "quarter" in text:  return "quarterfinals"    # before "final": "quarterfinals" contains it
+    if "semi" in text:     return "semifinals"
+    if "final" in text:    return "final"
+    other = _lp_clean(row.get("Tab")) or _lp_clean(row.get("Round"))
+    return re.sub(r"[^a-z0-9]+", "-", other.lower()).strip("-")
+
+def _lp_rows_to_matches(rows, now_iso=None):
+    """Convert cargoquery rows to the raw match dicts that _normalise_match expects."""
+    now_iso = now_iso or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    out, skipped = [], 0
+    for r in rows:
+        row = r.get("title", r) if isinstance(r, dict) else {}
+        # Cargo may return the alias, or the field name with underscores shown as spaces
+        start = _lp_clean(row.get("StartUTC") or row.get("DateTime UTC") or row.get("DateTime_UTC"))
+        tm    = re.match(r"(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::(\d{2}))?", start)
+        mid   = _lp_clean(row.get("MatchId"))
+        if _lp_clean(row.get("IsNullified")) == "1" or not tm or not mid:
+            skipped += 1
+            continue
+        iso    = "%sT%s:%sZ" % (tm.group(1), tm.group(2), tm.group(3) or "00")
+        winner = {"1": "home", "2": "away"}.get(_lp_clean(row.get("Winner")))
+        bo     = _lp_clean(row.get("BestOf"))
+        out.append({
+            "id":          mid,
+            "home":        _lp_clean(row.get("Team1")),
+            "away":        _lp_clean(row.get("Team2")),
+            "homeScore":   _lp_clean(row.get("Team1Score")),
+            "awayScore":   _lp_clean(row.get("Team2Score")),
+            "time":        iso,
+            "stage":       _lp_stage(row),
+            "bestOf":      int(bo) if bo.isdigit() else None,
+            "winner":      winner,
+            "statusState": "post" if winner else ("in" if iso <= now_iso else "pre"),
+        })
+    if skipped:
+        print("[LP] skipped {} row(s) without MatchId/start time or nullified".format(skipped))
+    return out
+
+def _provider_remote():
+    """Worlds 2026 schedule/results from Leaguepedia's Cargo API.
+
+    Own 10-min cache plus a 15-min backoff after a rate-limit, so the app's 120 s
+    refresh does not turn into 120 s API calls. Returns the last good data on any
+    failure, or None if there never was any (the caller then tries data/matches.json).
+    """
+    now = time.time()
+    if _lp["data"] is not None and now - _lp["ts"] < LP_TTL:
+        return _lp["data"]
+    if now < _lp["next_try"]:
+        return _lp["data"]
+    if not _LP_PREFIX_OK.match(LP_PREFIX):
+        print("[LP] WORLDS_PAGE_PREFIX has unsupported characters — ignoring remote feed")
+        _lp["next_try"] = now + LP_TTL
+        return _lp["data"]
+
+    rows = []
+    for page in range(5):
+        data = _lp_get({
+            "action": "cargoquery", "tables": "MatchSchedule", "fields": LP_FIELDS,
+            "where": "OverviewPage LIKE '{}%'".format(LP_PREFIX),
+            "order_by": "DateTime_UTC", "limit": LP_PAGE, "offset": page * LP_PAGE,
+        })
+        err = (data or {}).get("error")
+        if data is None or err:
+            code = err.get("code") if isinstance(err, dict) else "no response"
+            print("[LP] fetch failed:", code)
+            _lp["next_try"] = now + (LP_BACKOFF if code == "ratelimited" else 120)
+            return _lp["data"]                       # discard partial pages, keep last good
+        batch = data.get("cargoquery") or []
+        rows.extend(batch)
+        if len(batch) < LP_PAGE:
+            break
+
+    matches = _lp_rows_to_matches(rows)
+    if not matches:
+        print("[LP] no usable matches for prefix {!r} — check WORLDS_PAGE_PREFIX".format(LP_PREFIX))
+        _lp["next_try"] = now + 300
+        return _lp["data"]
+    _lp["data"], _lp["ts"] = matches, now
+    return matches
+
+def _provider_local_file():
+    """Dev/test feed: data/matches.json holds a list of match dicts."""
+    data = _jload("matches", None)
+    return data if isinstance(data, list) else None
 
 def _score_to_result(home_score, away_score):
     try:
         h, a = int(home_score), int(away_score)
-        if h > a: return "home"
-        if a > h: return "away"
-        return "draw"
     except (ValueError, TypeError):
         return None
+    if h > a: return "home"
+    if a > h: return "away"
+    return None   # a best-of series cannot finish level
 
-def fetch_espn():
-    """Return list of normalised match dicts (cached 120 s)."""
-    with _espn_lock:
+def _s(v):
+    return "" if v is None else str(v)
+
+def _normalise_match(m):
+    state = m.get("statusState", "pre")
+    stage = m.get("stage", "")
+    out = {
+        "id":          str(m["id"]),
+        "home":        m.get("home") or "TBD",
+        "away":        m.get("away") or "TBD",
+        "homeAbbr":    m.get("homeAbbr", ""),
+        "awayAbbr":    m.get("awayAbbr", ""),
+        "homeLogo":    m.get("homeLogo", ""),
+        "awayLogo":    m.get("awayLogo", ""),
+        "homeScore":   _s(m.get("homeScore")),
+        "awayScore":   _s(m.get("awayScore")),
+        "time":        m["time"],
+        "stage":       stage,
+        "stageLabel":  STAGE_LABELS.get(stage, stage.replace("-", " ").title()),
+        "bestOf":      m.get("bestOf"),
+        "statusState": state,
+        "statusDesc":  m.get("statusDesc") or {"pre": "Scheduled", "in": "Live", "post": "Final"}.get(state, state),
+    }
+    out["sourceResult"] = None
+    if state == "post":
+        if m.get("winner") in ("home", "away"):      # explicit winner (covers forfeits with no scores)
+            out["sourceResult"] = m["winner"]
+        elif out["homeScore"] != "" and out["awayScore"] != "":
+            out["sourceResult"] = _score_to_result(out["homeScore"], out["awayScore"])
+    return out
+
+def fetch_matches():
+    """Return list of normalised match dicts, soonest first (cached 120 s)."""
+    with _match_lock:
         now = time.time()
-        if _espn_cache["data"] and now - _espn_cache["ts"] < 120:
-            return _espn_cache["data"]
+        if _match_cache["data"] and now - _match_cache["ts"] < 120:
+            return _match_cache["data"]
 
-        raw = _fetch_espn_raw()
-        if not raw:
-            return _espn_cache["data"]  # stale on failure
-
-        try:
-            data = json.loads(raw, strict=False)
-        except Exception as e:
-            print("[ESPN] JSON parse error:", e)
-            return _espn_cache["data"]
+        raw = _provider_remote()
+        if raw is None:
+            raw = _provider_local_file()
+        if raw is None:
+            return _match_cache["data"]  # stale on failure
 
         matches = []
-        for event in data.get("events", []):
-            comp   = event["competitions"][0]
-            status = comp["status"]["type"]
-            state  = status.get("state", "pre")
-            desc   = status.get("description", "Scheduled")
-            slug   = event.get("season", {}).get("slug", "")
+        for m in raw:
+            try:
+                matches.append(_normalise_match(m))
+            except (KeyError, TypeError, AttributeError) as e:
+                print("[FEED] skipping malformed match:", e)
+        matches.sort(key=lambda m: m["time"])
 
-            comps   = comp.get("competitors", [])
-            home_c  = next((c for c in comps if c.get("homeAway") == "home"), comps[0] if comps else {})
-            away_c  = next((c for c in comps if c.get("homeAway") == "away"), comps[1] if len(comps) > 1 else {})
-            home_t  = home_c.get("team", {})
-            away_t  = away_c.get("team", {})
-            eid     = str(event["id"])
-
-            home_score = home_c.get("score", "")
-            away_score = away_c.get("score", "")
-
-            # For knockout matches, compute 90-min regulation score from goal details
-            home_score_reg = home_score
-            away_score_reg = away_score
-            is_knockout = slug in KNOCKOUT_STAGES
-            went_to_et  = False
-            if is_knockout and state == "post":
-                status_name = status.get("name", "")
-                went_to_et = "AET" in status_name or "PEN" in status_name
-                if went_to_et:
-                    home_id = str(home_t.get("id", ""))
-                    h_reg, a_reg = 0, 0
-                    for detail in comp.get("details", []):
-                        if not detail.get("scoringPlay"):
-                            continue
-                        if detail.get("shootout"):
-                            continue
-                        clock_val = detail.get("clock", {}).get("value", 0)
-                        if clock_val > 5400:
-                            continue
-                        # ESPN's "team" on a scoring play is always the beneficiary,
-                        # including own goals — no need to flip for ownGoal.
-                        team_id = str(detail.get("team", {}).get("id", ""))
-                        if team_id == home_id:
-                            h_reg += 1
-                        else:
-                            a_reg += 1
-                    home_score_reg = str(h_reg)
-                    away_score_reg = str(a_reg)
-
-            home_shootout = home_c.get("shootoutScore")
-            away_shootout = away_c.get("shootoutScore")
-
-            espn_result = None
-            if state == "post" and home_score_reg != "" and away_score_reg != "":
-                espn_result = _score_to_result(home_score_reg, away_score_reg)
-
-            # O/U odds — ESPN returns odds as a list; first item may be None
-            odds_raw   = comp.get("odds") or []
-            odds_item  = odds_raw[0] if isinstance(odds_raw, list) and odds_raw else odds_raw
-            odds       = odds_item if isinstance(odds_item, dict) else {}
-            ou_line    = odds.get("overUnder") or None
-            over_odds  = odds.get("overOdds")  or None
-            under_odds = odds.get("underOdds") or None
-
-            # For finished matches derive O/U result from final score
-            ou_result = None
-            if state == "post" and home_score_reg != "" and away_score_reg != "":
-                try:
-                    total = int(home_score_reg) + int(away_score_reg)
-                    if ou_line is not None:
-                        if total > ou_line:   ou_result = "over"
-                        elif total < ou_line: ou_result = "under"
-                except (ValueError, TypeError):
-                    pass
-
-            matches.append({
-                "id":          eid,
-                "home":        home_t.get("displayName", "TBD"),
-                "away":        away_t.get("displayName", "TBD"),
-                "homeAbbr":    home_t.get("abbreviation", ""),
-                "awayAbbr":    away_t.get("abbreviation", ""),
-                "homeLogo":    home_t.get("logo", ""),
-                "awayLogo":    away_t.get("logo", ""),
-                "homeScore":   home_score_reg,
-                "awayScore":   away_score_reg,
-                "fullTimeScore": "{}-{}".format(home_score, away_score) if went_to_et else None,
-                "homeShootout": home_shootout if went_to_et else None,
-                "awayShootout": away_shootout if went_to_et else None,
-                "time":        event.get("date", ""),
-                "stage":       slug,
-                "stageLabel":  STAGE_LABELS.get(slug, slug.replace("-", " ").title()),
-                "venue":       comp.get("venue", {}).get("fullName", ""),
-                "statusState": state,
-                "statusDesc":  desc,
-                "espnResult":  espn_result,
-                "ouLine":      ou_line,
-                "overOdds":    over_odds,
-                "underOdds":   under_odds,
-                "ouResult":    ou_result,
-            })
-
-        _espn_cache["data"] = matches
-        _espn_cache["ts"]   = now
+        _match_cache["data"] = matches
+        _match_cache["ts"]   = now
 
         # Auto-award runs in background — never blocks the HTTP response
         threading.Thread(target=_auto_award, args=(matches,), daemon=True).start()
@@ -459,86 +510,31 @@ def fetch_espn():
 
 
 def _auto_award(matches):
-    """Auto-award tokens for finished matches (win/draw and O/U) from ESPN scores."""
+    """Auto-award tokens for finished matches from the source result."""
     try:
         # Load all predictions once — avoids repeated DB calls per match
         all_preds = db_all_predictions()
-        all_ou    = db_all_ou_predictions()
 
         for m in matches:
-            # Cache ouLine into override while ESPN still provides it (pre/live)
-            if m.get("ouLine") and m["statusState"] in ("pre", "in"):
-                ou_ov = db_get_ou_override(m["id"])
-                if not ou_ov.get("ouLine"):
-                    ou_ov["ouLine"] = m["ouLine"]
-                    db_set_ou_override(m["id"], ou_ov)
-            if m["statusState"] != "post":
+            if m["statusState"] != "post" or not m.get("sourceResult"):
                 continue
-
-            # ── Win/Draw/Loss ─────────────────────────────────────────────────
             try:
-                if m.get("espnResult"):
-                    ov = db_get_override(m["id"])
-                    if not ov.get("result"):
-                        result = m["espnResult"]
-                        print("[AUTO] Win result {} for {} vs {}".format(result, m["home"], m["away"]))
-                        db_set_override(m["id"], {"result": result, "locked": True, "auto": True})
-                        for uname, picks in all_preds.items():
-                            p = picks.get(m["id"])
-                            if p and p.get("prediction") == result:
-                                u = db_get_user(uname)
-                                if u:
-                                    u["tokens"]  = u.get("tokens", 0) + WIN_REWARD
-                                    u["correct"] = u.get("correct", 0) + 1
-                                    db_set_user(uname, u)
+                ov = db_get_override(m["id"])
+                if ov.get("result"):
+                    continue
+                result = m["sourceResult"]
+                print("[AUTO] Winner {} for {} vs {}".format(result, m["home"], m["away"]))
+                db_set_override(m["id"], {"result": result, "locked": True, "auto": True})
+                for uname, picks in all_preds.items():
+                    p = picks.get(m["id"])
+                    if p and p.get("prediction") == result:
+                        u = db_get_user(uname)
+                        if u:
+                            u["tokens"]  = u.get("tokens", 0) + WIN_REWARD
+                            u["correct"] = u.get("correct", 0) + 1
+                            db_set_user(uname, u)
             except Exception as e:
-                print("[AUTO] Win award error for {}: {}".format(m["id"], e))
-
-            # ── Over/Under ────────────────────────────────────────────────────
-            try:
-                ou_ov = db_get_ou_override(m["id"])
-                if not ou_ov.get("result"):
-                    ou_result = None
-                    if m["statusState"] == "post":
-                        home_s = m.get("homeScore", "")
-                        away_s = m.get("awayScore", "")
-                        if home_s != "" and away_s != "":
-                            try:
-                                total = int(home_s) + int(away_s)
-                                # Use pre-match stored line — ESPN may shift it in-play
-                                stored_line = ou_ov.get("ouLine")
-                                if not stored_line:
-                                    for uname, picks in all_ou.items():
-                                        p = picks.get(m["id"])
-                                        if p and p.get("ouLine"):
-                                            stored_line = p["ouLine"]
-                                            break
-                                if stored_line:
-                                    stored_line = float(stored_line)
-                                elif m.get("ouLine") is not None:
-                                    stored_line = float(m["ouLine"])
-                                if stored_line:
-                                    if total > stored_line:   ou_result = "over"
-                                    elif total < stored_line: ou_result = "under"
-                            except (ValueError, TypeError):
-                                pass
-
-                    if ou_result:
-                        print("[AUTO] O/U result {} for {} vs {}".format(ou_result, m["home"], m["away"]))
-                        override_data = {"result": ou_result, "locked": True, "auto": True}
-                        if stored_line:
-                            override_data["ouLine"] = stored_line
-                        db_set_ou_override(m["id"], override_data)
-                        for uname, picks in all_ou.items():
-                            p = picks.get(m["id"])
-                            if p and p.get("prediction") == ou_result:
-                                u = db_get_user(uname)
-                                if u:
-                                    u["tokens"]  = u.get("tokens", 0) + WIN_REWARD
-                                    u["correct"] = u.get("correct", 0) + 1
-                                    db_set_user(uname, u)
-            except Exception as e:
-                print("[AUTO] O/U award error for {}: {}".format(m["id"], e))
+                print("[AUTO] Award error for {}: {}".format(m["id"], e))
 
     except Exception as e:
         print("[AUTO] _auto_award failed:", e)
@@ -636,21 +632,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     # ── GET routes ────────────────────────────────────────────────────────────
     def _get(self, path):
-        if path == "/api/espn/matches":
-            matches = fetch_espn()
+        if path == "/api/matches":
+            matches = fetch_matches()
             if matches is None:
-                json_resp(self, 502, {"error": "Could not reach ESPN. Check internet/proxy."}); return
-            overrides    = db_all_overrides()
-            ou_overrides = db_all_ou_overrides()
+                json_resp(self, 502, {"error": "No Worlds 2026 match data available yet."}); return
+            overrides = db_all_overrides()
             result = []
             for m in matches:
                 ov    = overrides.get(m["id"], {})
-                ou_ov = ou_overrides.get(m["id"], {})
                 entry = dict(m)
                 entry["locked"]      = ov.get("locked", False) or m["statusState"] in ("in", "post")
                 entry["adminResult"] = ov.get("result")
-                # Prefer stored O/U result — ESPN may shift the line in-play
-                entry["ouResult"]    = ou_ov.get("result") or m.get("ouResult")
                 result.append(entry)
             json_resp(self, 200, result)
 
@@ -658,9 +650,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             users = db_all_users()
 
             # Build set of finished match IDs (statusState == "post")
-            matches      = fetch_espn() or []
-            overrides    = db_all_overrides()
-            ou_overrides = db_all_ou_overrides()
+            matches   = fetch_matches() or []
+            overrides = db_all_overrides()
             finished_ids = {
                 m["id"] for m in matches
                 if m["statusState"] == "post"
@@ -668,7 +659,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             }
 
             all_preds = db_all_predictions()
-            all_ou    = db_all_ou_predictions()
 
             board = []
             for u in users:
@@ -677,21 +667,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 net_gain = tokens - INITIAL_TOKENS
 
                 # Count predictions on finished matches only (for accuracy denominator)
-                uname     = u["username"]
-                fin_preds = sum(1 for mid in all_preds.get(uname, {}) if mid in finished_ids)
-                fin_ou    = sum(1 for mid in all_ou.get(uname, {})    if mid in finished_ids)
-                finished_count = fin_preds + fin_ou
-
-                # Total placed (for display)
-                total_placed = u.get("predictions", 0)
+                uname          = u["username"]
+                finished_count = sum(1 for mid in all_preds.get(uname, {}) if mid in finished_ids)
 
                 board.append({
                     "username":       uname,
                     "tokens":         tokens,
                     "netGain":        net_gain,
                     "correct":        correct,
-                    "predictions":    total_placed,    # all bets placed
-                    "finishedBets":   finished_count,  # bets on finished matches (accuracy denominator)
+                    "predictions":    u.get("predictions", 0),  # all bets placed
+                    "finishedBets":   finished_count,           # bets on finished matches (accuracy denominator)
                 })
             board.sort(key=lambda x: (-x["netGain"], -x["correct"], -x["finishedBets"]))
             json_resp(self, 200, board)
@@ -704,9 +689,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "username":         uname,
                 "tokens":           user.get("tokens", 0),
                 "correct":          user.get("correct", 0),
-                "predictions":      db_get_predictions(uname),    # dict of win/draw picks
-                "ouPredictions":    db_get_ou_predictions(uname), # dict of O/U picks
-                "predictionCount":  user.get("predictions", 0),   # total count (both types)
+                "predictions":      db_get_predictions(uname),    # dict of winner picks
+                "predictionCount":  user.get("predictions", 0),   # total count
             })
 
         elif path == "/api/predictions":
@@ -714,12 +698,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not user:
                 json_resp(self, 401, {"error": "Unauthorized"}); return
             json_resp(self, 200, db_get_predictions(uname))
-
-        elif path == "/api/ou_predictions":
-            user, uname = auth_user(self)
-            if not user:
-                json_resp(self, 401, {"error": "Unauthorized"}); return
-            json_resp(self, 200, db_get_ou_predictions(uname))
 
         else:
             json_resp(self, 404, {"error": "Not found"})
@@ -760,21 +738,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 json_resp(self, 401, {"error": "Unauthorized"}); return
             match_id   = str(body.get("match_id", "")).strip()
             prediction = body.get("prediction")
-            if prediction not in ("home", "away", "draw"):
-                json_resp(self, 400, {"error": "prediction must be home, away, or draw"}); return
+            if prediction not in ("home", "away"):
+                json_resp(self, 400, {"error": "prediction must be home or away"}); return
             if not match_id:
                 json_resp(self, 400, {"error": "match_id required"}); return
 
-            # Always use fresh/cached ESPN data — fetch now if cache is empty
-            cached = _espn_cache.get("data") or fetch_espn() or []
-            m_espn = next((m for m in cached if m["id"] == match_id), None)
+            # Always use fresh/cached match data — fetch now if cache is empty
+            cached = _match_cache.get("data") or fetch_matches() or []
+            m_src = next((m for m in cached if m["id"] == match_id), None)
 
             # Reject unknown match IDs first
-            if m_espn is None:
+            if m_src is None:
                 json_resp(self, 404, {"error": "Match not found"}); return
 
             # Reject if match has started or finished
-            if m_espn["statusState"] in ("in", "post"):
+            if m_src["statusState"] in ("in", "post"):
                 json_resp(self, 400, {"error": "Match has already started"}); return
 
             # Reject if admin-locked or result already set
@@ -796,52 +774,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             db_set_prediction(uname, match_id, prediction)
             json_resp(self, 200, {"message": "Prediction placed", "tokens": user["tokens"]})
 
-        elif path == "/api/predict/ou":
-            user, uname = auth_user(self)
-            if not user:
-                json_resp(self, 401, {"error": "Unauthorized"}); return
-            match_id   = str(body.get("match_id", "")).strip()
-            prediction = body.get("prediction")
-            if prediction not in ("over", "under"):
-                json_resp(self, 400, {"error": "prediction must be over or under"}); return
-            if not match_id:
-                json_resp(self, 400, {"error": "match_id required"}); return
-
-            cached = _espn_cache.get("data") or fetch_espn() or []
-            m_espn = next((m for m in cached if m["id"] == match_id), None)
-            if m_espn is None:
-                json_resp(self, 404, {"error": "Match not found"}); return
-            if m_espn.get("ouLine") is None:
-                json_resp(self, 400, {"error": "No O/U line available for this match"}); return
-            if m_espn["statusState"] in ("in", "post"):
-                json_resp(self, 400, {"error": "Match has already started"}); return
-
-            ou_ov = db_get_ou_override(match_id)
-            if ou_ov.get("locked") or ou_ov.get("result"):
-                json_resp(self, 400, {"error": "O/U is locked for this match"}); return
-
-            ou_line_val = m_espn.get("ouLine")
-            existing = db_get_ou_predictions(uname).get(match_id)
-            if existing:
-                db_set_ou_prediction(uname, match_id, prediction, ou_line_val)
-                json_resp(self, 200, {"message": "O/U prediction updated", "tokens": user.get("tokens", 0)}); return
-
-            if user.get("tokens", 0) < BET_COST:
-                json_resp(self, 400, {"error": "Not enough tokens"}); return
-
-            user["tokens"]     -= BET_COST
-            user["predictions"] = user.get("predictions", 0) + 1
-            db_set_user(uname, user)
-            db_set_ou_prediction(uname, match_id, prediction, ou_line_val)
-            json_resp(self, 200, {"message": "O/U prediction placed", "tokens": user["tokens"]})
-
         elif path == "/api/admin/result":
             if not check_admin(body):
                 json_resp(self, 403, {"error": "Forbidden"}); return
             match_id = str(body.get("match_id", "")).strip()
             result   = body.get("result")
-            if result not in ("home", "away", "draw"):
-                json_resp(self, 400, {"error": "result must be home, away, or draw"}); return
+            if result not in ("home", "away"):
+                json_resp(self, 400, {"error": "result must be home or away"}); return
             ov = db_get_override(match_id)
             if ov.get("result"):
                 json_resp(self, 400, {"error": "Result already set"}); return
@@ -887,102 +826,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
             json_resp(self, 200, {"message": "Result cleared", "old_result": old_result,
                                    "reverted_users": reverted})
 
-        elif path == "/api/admin/ou_result":
-            # Manually award O/U when auto-award couldn't resolve the line
+        elif path == "/api/admin/reset_season":
+            # Start a fresh tournament: keep accounts, reset tokens, wipe picks + results
             if not check_admin(body):
                 json_resp(self, 403, {"error": "Forbidden"}); return
-            match_id  = str(body.get("match_id", "")).strip()
-            ou_result = body.get("result")   # "over" or "under"
-            if ou_result not in ("over", "under"):
-                json_resp(self, 400, {"error": "result must be over or under"}); return
-            ou_ov = db_get_ou_override(match_id)
-            if ou_ov.get("result"):
-                json_resp(self, 400, {"error": "O/U result already set"}); return
-            db_set_ou_override(match_id, {"result": ou_result, "locked": True, "manual": True})
-            all_ou = db_all_ou_predictions()
-            winners = []
-            for uname, picks in all_ou.items():
-                p = picks.get(match_id)
-                if p and p.get("prediction") == ou_result:
-                    u = db_get_user(uname)
-                    if u:
-                        u["tokens"]  = u.get("tokens", 0) + WIN_REWARD
-                        u["correct"] = u.get("correct", 0) + 1
-                        db_set_user(uname, u)
-                        winners.append(uname)
-            json_resp(self, 200, {"message": "O/U result set", "winners": winners,
-                                   "winner_count": len(winners)})
-
-        elif path == "/api/admin/clear_ou_result":
-            if not check_admin(body):
-                json_resp(self, 403, {"error": "Forbidden"}); return
-            match_id = str(body.get("match_id", "")).strip()
-            if not match_id:
-                json_resp(self, 400, {"error": "match_id required"}); return
-            ou_ov = db_get_ou_override(match_id)
-            old_result = ou_ov.get("result")
-            if not old_result:
-                json_resp(self, 400, {"error": "No O/U result to clear"}); return
-            all_ou = db_all_ou_predictions()
-            reverted = []
-            for uname, picks in all_ou.items():
-                p = picks.get(match_id)
-                if p and p.get("prediction") == old_result:
-                    u = db_get_user(uname)
-                    if u:
-                        u["tokens"]  = u.get("tokens", 0) - WIN_REWARD
-                        u["correct"] = max(u.get("correct", 0) - 1, 0)
-                        db_set_user(uname, u)
-                        reverted.append(uname)
-            kept = {k: v for k, v in ou_ov.items() if k in ("ouLine",)}
-            db_set_ou_override(match_id, kept)
-            json_resp(self, 200, {"message": "O/U result cleared", "old_result": old_result,
-                                   "reverted_users": reverted})
-
-        elif path == "/api/admin/reprocess_ou":
-            # Reprocess ALL finished matches using stored ouLine from override or predictions
-            if not check_admin(body):
-                json_resp(self, 403, {"error": "Forbidden"}); return
-            cached = _espn_cache.get("data") or fetch_espn() or []
-            all_ou = db_all_ou_predictions()
-            processed, skipped = [], []
-            for m in cached:
-                if m["statusState"] != "post":
-                    continue
-                ou_ov = db_get_ou_override(m["id"])
-                if ou_ov.get("result"):
-                    skipped.append(m["id"])
-                    continue
-                # Find stored ouLine
-                stored_line = ou_ov.get("ouLine")
-                if not stored_line:
-                    for uname, picks in all_ou.items():
-                        p = picks.get(m["id"])
-                        if p and p.get("ouLine"):
-                            stored_line = p["ouLine"]
-                            break
-                if not stored_line:
-                    continue
-                try:
-                    total = int(m["homeScore"]) + int(m["awayScore"])
-                    line  = float(stored_line)
-                    if total > line:   ou_result = "over"
-                    elif total < line: ou_result = "under"
-                    else: continue  # push
-                except (ValueError, TypeError):
-                    continue
-                db_set_ou_override(m["id"], {"result": ou_result, "locked": True, "auto": True,
-                                              "ouLine": stored_line})
-                for uname, picks in all_ou.items():
-                    p = picks.get(m["id"])
-                    if p and p.get("prediction") == ou_result:
-                        u = db_get_user(uname)
-                        if u:
-                            u["tokens"]  = u.get("tokens", 0) + WIN_REWARD
-                            u["correct"] = u.get("correct", 0) + 1
-                            db_set_user(uname, u)
-                processed.append("{} vs {} → {}".format(m["home"], m["away"], ou_result))
-            json_resp(self, 200, {"processed": processed, "skipped_count": len(skipped)})
+            if body.get("confirm") != "RESET":
+                json_resp(self, 400, {"error": 'confirm must be "RESET"'}); return
+            n = db_reset_season()
+            if n is None:
+                json_resp(self, 500, {"error": "Reset failed — database unavailable, nothing was changed"}); return
+            json_resp(self, 200, {"message": "Season reset", "users_reset": n,
+                                   "tokens": INITIAL_TOKENS})
 
         elif path == "/api/admin/reset_password":
             if not check_admin(body):
@@ -1015,18 +869,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
-    """Handle each request in its own thread — prevents ESPN fetch from blocking health checks."""
+    """Handle each request in its own thread — prevents the match-feed fetch from blocking health checks."""
     daemon_threads = True
 
 
 if __name__ == "__main__":
-    # Warm-up DB connection and ESPN cache in background
+    # Warm-up DB connection and match cache in background
     threading.Thread(target=get_db, daemon=True).start()
-    threading.Thread(target=fetch_espn, daemon=True).start()
+    threading.Thread(target=fetch_matches, daemon=True).start()
 
     server = ThreadedHTTPServer(("0.0.0.0", PORT), Handler)
     print("=" * 52)
-    print("  World Cup 2026 Predictor")
+    print("  Worlds 2026 Predictor")
     print("  http://localhost:{}".format(PORT))
     print("  Admin: http://localhost:{}/admin".format(PORT))
     print("  Storage: {}".format("MongoDB Atlas" if (MONGO_URI and _HAS_PYMONGO) else "Local JSON files"))
