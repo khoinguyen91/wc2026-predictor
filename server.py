@@ -308,7 +308,7 @@ LP_PAGE    = 500    # rows per request (anonymous maximum)
 LP_FIELDS  = ("MatchId,Team1,Team2,Team1Score,Team2Score,Winner,BestOf,"
               "OverviewPage,Tab,Phase,Round,IsNullified,DateTime_UTC=StartUTC")
 _LP_PREFIX_OK = re.compile(r"^[A-Za-z0-9 /_.\-]+$")
-_lp = {"data": None, "ts": 0, "next_try": 0, "session": None, "login_ts": 0}
+_lp = {"data": None, "ts": 0, "next_try": 0, "session": None, "login_ts": 0, "last_error": ""}
 
 def _lp_login():
     """Bot-password login. Returns a requests.Session, or None to go anonymous."""
@@ -419,6 +419,7 @@ def _provider_remote():
         if data is None or err:
             code = err.get("code") if isinstance(err, dict) else "no response"
             print("[LP] fetch failed:", code)
+            _lp["last_error"] = str(code)
             _lp["next_try"] = now + (LP_BACKOFF if code == "ratelimited" else 120)
             return _lp["data"]                       # discard partial pages, keep last good
         batch = data.get("cargoquery") or []
@@ -429,9 +430,10 @@ def _provider_remote():
     matches = _lp_rows_to_matches(rows)
     if not matches:
         print("[LP] no usable matches for prefix {!r} — check WORLDS_PAGE_PREFIX".format(LP_PREFIX))
+        _lp["last_error"] = "no matches found for page prefix '{}'".format(LP_PREFIX)
         _lp["next_try"] = now + 300
         return _lp["data"]
-    _lp["data"], _lp["ts"] = matches, now
+    _lp["data"], _lp["ts"], _lp["last_error"] = matches, now, ""
     return matches
 
 def _provider_local_file():
@@ -635,7 +637,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/api/matches":
             matches = fetch_matches()
             if matches is None:
-                json_resp(self, 502, {"error": "No Worlds 2026 match data available yet."}); return
+                why = _lp["last_error"] or "feed not fetched yet"
+                json_resp(self, 502, {"error": "No Worlds 2026 match data available yet. (Leaguepedia: {})".format(why)}); return
             overrides = db_all_overrides()
             result = []
             for m in matches:
