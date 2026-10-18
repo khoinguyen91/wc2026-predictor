@@ -82,6 +82,31 @@ def _scrub(msg):
                     msg = msg.replace(pw, "<redacted>")
     return re.sub(r"://[^@\s/]+@", "://<credentials>@", msg)[:200]
 
+def _db_hint(e):
+    """Map a connection error to a fixed, safe category for /healthz.
+
+    The exception text can contain the cluster hostname or user name, so it is never
+    exposed; only one of these constant labels is.
+    """
+    t = str(e).lower()
+    for needle, label in (
+        ("dns query name does not exist", "dns-name-not-found"),   # SRV host typo / deleted cluster
+        ("does not contain an answer",    "dns-no-answer"),
+        ("lifetime expired",              "dns-timeout"),
+        ("timed out",                     "dns-timeout"),
+        ("nameservers",                   "dns-resolver-failed"),
+        ("resolver configuration",        "dns-resolver-failed"),
+        ("dnspython",                     "dnspython-missing"),
+        ("txt record",                    "bad-txt-record"),
+        ("must be escaped",               "password-needs-url-encoding"),
+        ("unknown option",                "unknown-uri-option"),
+        ("authentication",                "auth-failed"),
+        ("ssl",                           "tls-error"),
+    ):
+        if needle in t:
+            return label
+    return "other"
+
 def get_db():
     """Return the MongoDB database, or None when running in local-file mode (MONGO_URI empty).
 
@@ -122,11 +147,11 @@ def get_db():
             # Only the exception class name is exposed via /healthz (never the message, which
             # can echo hostnames or user names); the scrubbed message goes to the log.
             _storage.update(mode="unavailable", retry_at=time.time() + DB_RETRY_SECONDS,
-                            reason=type(e).__name__)
+                            reason=type(e).__name__, hint=_db_hint(e))
             print("[DB] MongoDB connection failed ({}): {}".format(type(e).__name__, _scrub(e)), flush=True)
             raise StorageUnavailable("MongoDB connection failed") from None
         _db = client["wc2026"]
-        _storage.update(mode="mongodb", reason="")
+        _storage.update(mode="mongodb", reason="", hint="")
         print("[DB] Connected to MongoDB Atlas", flush=True)
         return _db
 
@@ -846,6 +871,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             body = "ok storage={}".format(_storage["mode"])
             if _storage["mode"] == "unavailable" and _storage.get("reason"):
                 body += " reason={}".format(re.sub(r"[^A-Za-z0-9_]", "", _storage["reason"])[:60])
+                if _storage.get("hint"):
+                    body += " hint={}".format(re.sub(r"[^a-z0-9\-]", "", _storage["hint"])[:40])
             body = body.encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
