@@ -68,7 +68,7 @@ class StorageUnavailable(Exception):
     """
 
 DB_RETRY_SECONDS = 15
-_storage = {"mode": "starting", "retry_at": 0}   # mode: starting | mongodb | local-files | unavailable
+_storage = {"mode": "starting", "retry_at": 0, "reason": ""}   # mode: starting | mongodb | local-files | unavailable
 
 def _scrub(msg):
     """Strip the connection string and any user:password@ from a message before logging it."""
@@ -104,8 +104,9 @@ def get_db():
         if time.time() < _storage["retry_at"]:
             raise StorageUnavailable("MongoDB unreachable, retrying shortly")
         if not _HAS_PYMONGO:
-            _storage.update(mode="unavailable", retry_at=time.time() + DB_RETRY_SECONDS)
-            print("[DB] MONGO_URI is set but pymongo is not installed")
+            _storage.update(mode="unavailable", retry_at=time.time() + DB_RETRY_SECONDS,
+                            reason="PymongoNotInstalled")
+            print("[DB] MONGO_URI is set but pymongo is not installed", flush=True)
             raise StorageUnavailable("pymongo not installed")
         try:
             client = _pymongo.MongoClient(
@@ -118,12 +119,15 @@ def get_db():
             )
             client.admin.command("ping")
         except Exception as e:
-            _storage.update(mode="unavailable", retry_at=time.time() + DB_RETRY_SECONDS)
-            print("[DB] MongoDB connection failed ({}): {}".format(type(e).__name__, _scrub(e)))
+            # Only the exception class name is exposed via /healthz (never the message, which
+            # can echo hostnames or user names); the scrubbed message goes to the log.
+            _storage.update(mode="unavailable", retry_at=time.time() + DB_RETRY_SECONDS,
+                            reason=type(e).__name__)
+            print("[DB] MongoDB connection failed ({}): {}".format(type(e).__name__, _scrub(e)), flush=True)
             raise StorageUnavailable("MongoDB connection failed") from None
         _db = client["wc2026"]
-        _storage["mode"] = "mongodb"
-        print("[DB] Connected to MongoDB Atlas")
+        _storage.update(mode="mongodb", reason="")
+        print("[DB] Connected to MongoDB Atlas", flush=True)
         return _db
 
 def _warm_db():
@@ -839,7 +843,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/healthz":
             # Lightweight health check for Render — never blocks, always 200 (a database outage
             # must not make Render restart the service). Reports the last known storage mode.
-            body = "ok storage={}".format(_storage["mode"]).encode()
+            body = "ok storage={}".format(_storage["mode"])
+            if _storage["mode"] == "unavailable" and _storage.get("reason"):
+                body += " reason={}".format(re.sub(r"[^A-Za-z0-9_]", "", _storage["reason"])[:60])
+            body = body.encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
             self.send_header("Content-Length", len(body))
