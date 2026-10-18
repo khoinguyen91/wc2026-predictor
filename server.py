@@ -59,39 +59,91 @@ os.makedirs(DATA_DIR, exist_ok=True)
 _db = None
 _db_lock = threading.Lock()
 
+class StorageUnavailable(Exception):
+    """MONGO_URI is set but MongoDB cannot be reached.
+
+    Raised instead of quietly falling back to local files: on a host with an
+    ephemeral disk (Render free tier) those files vanish on every deploy/restart,
+    and writing to them would split the data between two places.
+    """
+
+DB_RETRY_SECONDS = 15
+_storage = {"mode": "starting", "retry_at": 0}   # mode: starting | mongodb | local-files | unavailable
+
+def _scrub(msg):
+    """Strip the connection string and any user:password@ from a message before logging it."""
+    msg = str(msg)
+    if MONGO_URI:
+        msg = msg.replace(MONGO_URI, "<MONGO_URI>")
+        m = re.match(r"^[A-Za-z+]+://[^:@/]+:([^@]+)@", MONGO_URI)
+        if m:                                    # the password on its own, raw or URL-decoded
+            for pw in {m.group(1), urllib.parse.unquote(m.group(1))}:
+                if pw:
+                    msg = msg.replace(pw, "<redacted>")
+    return re.sub(r"://[^@\s/]+@", "://<credentials>@", msg)[:200]
+
 def get_db():
+    """Return the MongoDB database, or None when running in local-file mode (MONGO_URI empty).
+
+    Raises StorageUnavailable if MONGO_URI is set but the database cannot be reached.
+    After a failure it does not retry for DB_RETRY_SECONDS, so requests fail fast
+    instead of each waiting out a 5 s connection timeout.
+    """
     global _db
     if _db is not None:
         return _db
     with _db_lock:
         if _db is not None:
             return _db
-        if _HAS_PYMONGO and MONGO_URI:
-            try:
-                client = _pymongo.MongoClient(
-                    MONGO_URI,
-                    serverSelectionTimeoutMS=5000,
-                    connectTimeoutMS=5000,
-                    socketTimeoutMS=10000,
-                    maxPoolSize=10,
-                    retryWrites=True,
-                )
-                client.admin.command("ping")
-                _db = client["wc2026"]
-                print("[DB] Connected to MongoDB Atlas")
-                return _db
-            except Exception as e:
-                print("[DB] MongoDB connection failed:", e)
-        print("[DB] Using local JSON files")
-        return None
+        if not MONGO_URI:
+            if _storage["mode"] != "local-files":
+                print("[DB] MONGO_URI not set - using local JSON files "
+                      "(data is lost on hosts with an ephemeral disk)")
+            _storage["mode"] = "local-files"
+            return None
+        if time.time() < _storage["retry_at"]:
+            raise StorageUnavailable("MongoDB unreachable, retrying shortly")
+        if not _HAS_PYMONGO:
+            _storage.update(mode="unavailable", retry_at=time.time() + DB_RETRY_SECONDS)
+            print("[DB] MONGO_URI is set but pymongo is not installed")
+            raise StorageUnavailable("pymongo not installed")
+        try:
+            client = _pymongo.MongoClient(
+                MONGO_URI,
+                serverSelectionTimeoutMS=5000,
+                connectTimeoutMS=5000,
+                socketTimeoutMS=10000,
+                maxPoolSize=10,
+                retryWrites=True,
+            )
+            client.admin.command("ping")
+        except Exception as e:
+            _storage.update(mode="unavailable", retry_at=time.time() + DB_RETRY_SECONDS)
+            print("[DB] MongoDB connection failed ({}): {}".format(type(e).__name__, _scrub(e)))
+            raise StorageUnavailable("MongoDB connection failed") from None
+        _db = client["wc2026"]
+        _storage["mode"] = "mongodb"
+        print("[DB] Connected to MongoDB Atlas")
+        return _db
+
+def _warm_db():
+    """Startup warm-up: connect early. A failure is already logged and requests answer 503 until it recovers."""
+    try:
+        get_db()
+    except StorageUnavailable:
+        pass
 
 def _safe_db(fn, fallback):
-    """Run a DB operation; on any error reconnect once and retry, else return fallback."""
+    """Run a DB operation; on any error reconnect once and retry, else return fallback.
+
+    If the reconnect itself fails, get_db() raises StorageUnavailable and that
+    propagates to the caller (the request gets a 503) rather than returning fallback.
+    """
     global _db
     try:
         return fn()
     except Exception as e:
-        print("[DB] error, reconnecting:", e)
+        print("[DB] error, reconnecting ({}): {}".format(type(e).__name__, _scrub(e)))
         _db = None          # force reconnect on next get_db()
         get_db()
         try:
@@ -770,6 +822,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         """Override to catch all unhandled exceptions and return 500."""
         try:
             super().handle_one_request()
+        except StorageUnavailable:
+            try:
+                json_resp(self, 503, {"error": "Storage temporarily unavailable. Please try again shortly."})
+            except Exception:
+                pass
         except Exception as e:
             print("[SERVER] Unhandled exception:", e)
             try:
@@ -780,8 +837,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path.rstrip("/")
         if path == "/healthz":
-            # Lightweight health check for Render — never blocks
-            body = b"ok"
+            # Lightweight health check for Render — never blocks, always 200 (a database outage
+            # must not make Render restart the service). Reports the last known storage mode.
+            body = "ok storage={}".format(_storage["mode"]).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
             self.send_header("Content-Length", len(body))
@@ -1079,7 +1137,7 @@ class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 
 if __name__ == "__main__":
     # Warm-up DB connection and match cache in background
-    threading.Thread(target=get_db, daemon=True).start()
+    threading.Thread(target=_warm_db, daemon=True).start()
     threading.Thread(target=fetch_matches, daemon=True).start()
 
     server = ThreadedHTTPServer(("0.0.0.0", PORT), Handler)
