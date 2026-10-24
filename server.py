@@ -326,6 +326,32 @@ def db_all_overrides():
         return {doc["match_id"]: doc for doc in docs}
     return _jload("overrides", {})
 
+# ── Pinned match order ────────────────────────────────────────────────────────
+# The home/away order a match was first shown with. Sources can list the same match the
+# other way round later (or on a fallback source), which would silently point every saved
+# "home"/"away" pick at the other team, so later data is mapped back to this order.
+def db_all_orders():
+    db = get_db()
+    if db is not None:
+        docs = _safe_db(lambda: list(db.match_order.find({}, {"_id": 0})), [])
+        return {d["match_id"]: d for d in docs}
+    return _jload("match_order", {})
+
+def db_set_orders(orders):
+    """orders: {match_id: {"home": name, "away": name}}"""
+    db = get_db()
+    if db is not None:
+        def _write():
+            for mid, o in orders.items():
+                db.match_order.replace_one({"match_id": mid},
+                                           {"match_id": mid, "home": o["home"], "away": o["away"]}, upsert=True)
+        _safe_db(_write, None)
+        return
+    cur = _jload("match_order", {})
+    for mid, o in orders.items():
+        cur[mid] = {"home": o["home"], "away": o["away"]}
+    _jsave("match_order", cur)
+
 # ── Match feed ────────────────────────────────────────────────────────────────
 # Every source returns a list of match dicts with these fields (see _normalise_match):
 #   id, home, away, homeAbbr, awayAbbr, homeLogo, awayLogo,
@@ -743,6 +769,34 @@ def _normalise_match(m):
             out["sourceResult"] = _score_to_result(out["homeScore"], out["awayScore"])
     return out
 
+def _swap_sides(m):
+    """Return a copy of a raw match with home and away exchanged (names, abbr, logos, scores, winner)."""
+    m = dict(m)
+    for a, b in (("home", "away"), ("homeAbbr", "awayAbbr"), ("homeLogo", "awayLogo"), ("homeScore", "awayScore")):
+        m[a], m[b] = m.get(b, ""), m.get(a, "")
+    m["winner"] = {"home": "away", "away": "home"}.get(m.get("winner"), m.get("winner"))
+    return m
+
+def _pin_match_order(raw):
+    """Keep every match in the order it was first shown. Raises StorageUnavailable if that order can't be read."""
+    orders, fresh, out = db_all_orders(), {}, []
+    for m in raw:
+        if not isinstance(m, dict) or m.get("id") is None:
+            out.append(m)
+            continue
+        mid  = str(m["id"])
+        h, a = str(m.get("home") or "").strip(), str(m.get("away") or "").strip()
+        real = bool(h) and bool(a) and h != a and "TBD" not in (h, a)    # both teams known
+        pin  = orders.get(mid)
+        if pin and real and pin.get("home") == a and pin.get("away") == h:
+            m = _swap_sides(m)                                           # source lists them the other way round
+        elif real and (not pin or {pin.get("home"), pin.get("away")} != {h, a}):
+            fresh[mid] = {"home": h, "away": a}                          # first sight, or the pairing changed
+        out.append(m)
+    if fresh:
+        db_set_orders(fresh)
+    return out
+
 def fetch_matches():
     """Return list of normalised match dicts, soonest first (cached 120 s)."""
     with _match_lock:
@@ -757,6 +811,11 @@ def fetch_matches():
             raw = _provider_local_file()
         if raw is None:
             return _match_cache["data"]  # stale on failure
+
+        try:
+            raw = _pin_match_order(raw)
+        except StorageUnavailable:
+            return _match_cache["data"]  # can't read the pinned order: keep serving the last good data
 
         matches = []
         for m in raw:
@@ -1121,6 +1180,53 @@ class Handler(http.server.BaseHTTPRequestHandler):
             db_set_override(match_id, {})
             json_resp(self, 200, {"message": "Result cleared", "old_result": old_result,
                                    "reverted_users": reverted})
+
+        elif path == "/api/admin/set_order":
+            # Make <home> the home side of a started/finished match (repairs a match a source listed the
+            # other way round). The same team keeps winning: the stored result and the awards are re-labelled.
+            if not check_admin(body):
+                json_resp(self, 403, {"error": "Forbidden"}); return
+            match_id  = str(body.get("match_id", "")).strip()
+            want_home = str(body.get("home", "")).strip()
+            cached = _match_cache.get("data") or fetch_matches() or []
+            m = next((x for x in cached if x["id"] == match_id), None)
+            if m is None:
+                json_resp(self, 404, {"error": "Match not found"}); return
+            if m["statusState"] == "pre":
+                json_resp(self, 400, {"error": "Only started or finished matches can be reordered - "
+                                               "the order shown before a match is pinned automatically"}); return
+            if want_home not in (m["home"], m["away"]) or "TBD" in (m["home"], m["away"]):
+                json_resp(self, 400, {"error": "home must be one of the two teams of this match"}); return
+            if want_home == m["home"]:
+                json_resp(self, 200, {"message": "Order already set", "home": m["home"], "away": m["away"]}); return
+
+            new_home, new_away = m["away"], m["home"]
+            db_set_orders({match_id: {"home": new_home, "away": new_away}})
+            ov  = db_get_override(match_id)
+            old = ov.get("result")
+            new_result, reverted, awarded = None, [], []
+            if old in ("home", "away"):
+                new_result = "away" if old == "home" else "home"
+                for uname, picks in db_all_predictions().items():
+                    p = picks.get(match_id)
+                    u = db_get_user(uname) if p else None
+                    if not u:
+                        continue
+                    if p.get("prediction") == old:           # was paid for the wrong team
+                        u["tokens"]  = u.get("tokens", 0) - WIN_REWARD
+                        u["correct"] = max(u.get("correct", 0) - 1, 0)
+                        db_set_user(uname, u)
+                        reverted.append(uname)
+                    elif p.get("prediction") == new_result:  # picked the team that actually won
+                        u["tokens"]  = u.get("tokens", 0) + WIN_REWARD
+                        u["correct"] = u.get("correct", 0) + 1
+                        db_set_user(uname, u)
+                        awarded.append(uname)
+                db_set_override(match_id, dict(ov, result=new_result))
+            _match_cache["ts"] = 0           # re-read the feed so the new order shows at once
+            fetch_matches()
+            json_resp(self, 200, {"message": "Order updated", "home": new_home, "away": new_away,
+                                   "result": new_result, "reverted_users": reverted, "awarded_users": awarded})
 
         elif path == "/api/admin/reset_season":
             # Start a fresh tournament: keep accounts, reset tokens, wipe picks + results
