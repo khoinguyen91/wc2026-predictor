@@ -225,7 +225,7 @@ function renderMatchTable(){
     const stateMap = {pre:'',in:'live',post:'ft'};
     let statusBadge;
     if(m.adminResult){
-      statusBadge=`<span class="badge badge-green">✓ ${m.adminResult.toUpperCase()}</span>`;
+      statusBadge=`<span class="badge badge-green">✓ ${esc(m.adminResult === 'home' ? m.home : m.away)}</span>`;
     } else if(m.statusState==='in'){
       statusBadge=`<span class="badge badge-live">🔴 LIVE</span>`;
     } else if(m.statusState==='post'){

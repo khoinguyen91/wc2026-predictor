@@ -494,8 +494,14 @@ function teamHTML(m, side){
   return `<div class="team ${cls}">${imgEl}<div class="team-name">${esc(name)}</div></div>`;
 }
 
+// A pick is stored as 'home' or 'away'; players should see the team it stands for.
+function pickName(m, side){
+  return side === 'home' ? m.home : side === 'away' ? m.away : '';
+}
+
 function matchCardHTML(m){
   const pred      = myPredictions[m.id];
+  const pickTeam  = pred ? esc(pickName(m, pred.prediction)) : '';
   const isLive    = m.statusState === 'in';
   const isDone    = m.statusState === 'post';
 
@@ -539,7 +545,7 @@ function matchCardHTML(m){
   let resultBadge = '';
   if(result){
     const cls = result==='home' ? 'result-home' : 'result-away';
-    const lbl = (result==='home' ? m.home : m.away).toUpperCase()+' WIN';
+    const lbl = esc(pickName(m, result)).toUpperCase()+' WIN';
     resultBadge = `<span class="result-badge ${cls}">✓ ${lbl}</span>`;
   }
 
@@ -552,14 +558,14 @@ function matchCardHTML(m){
     const cl = isCorrect?' correct-pred':isWrong?' wrong-pred':'';
     predHtml = `<div class="predict-btns">
       <button class="pred-btn selected${cl}" disabled>
-        Your pick: ${pred.prediction.toUpperCase()} ${isCorrect?'✓ +300':'✗ -200'}
+        Your pick: ${pickTeam} ${isCorrect?'✓ +300':'✗ -200'}
       </button>
     </div>`;
   } else if(isPending && pred){
     // Match finished but result not yet parsed (rare edge case)
     predHtml = `<div class="predict-btns">
       <button class="pred-btn selected" style="opacity:.7" disabled>
-        ⏳ ${pred.prediction.toUpperCase()} — pending
+        ⏳ ${pickTeam} — pending
       </button>
     </div>`;
   } else if(!hasResult && !effectiveLocked && token){
@@ -575,7 +581,7 @@ function matchCardHTML(m){
   } else if(effectiveLocked && pred && !hasResult){
     const liveTag = isLive ? '🔴' : '🔒';
     predHtml = `<div class="predict-btns">
-      <button class="pred-btn selected" disabled>${liveTag} ${pred.prediction.toUpperCase()}</button>
+      <button class="pred-btn selected" disabled>${liveTag} ${pickTeam}</button>
     </div>`;
   } else if(effectiveLocked && !hasResult){
     const liveTag = isLive ? '🔴 Live — locked' : isDone ? 'FT — locked' : '🔒 Locked';
